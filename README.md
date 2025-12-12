@@ -218,10 +218,3 @@ LGPL-3.0-or-later — see LICENSE file in this repository.
 
 Refactor by: Darkelf2024  
 Original author / inspiration: Dr. Kevin Moore and the Darkelf project.
-
-If you'd like, I can:
-- add a sample `requirements.txt`,
-- provide a small systemd service example to run Tor on a non-default port (9052),
-- or add a simple `config.yaml` to externalize the SOCKS port and other settings.
-
-Which would you prefer next?
