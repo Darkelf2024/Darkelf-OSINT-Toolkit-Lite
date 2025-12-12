@@ -18,7 +18,7 @@ Important: This tool is for ethical OSINT / research only. Use it only on system
 Install dependencies, start Tor on `127.0.0.1:9052`, then run:
 
 ```bash
-python "Darkelf CLI TL OSINT Tool Kit copy.py"
+python "Darkelf CLI TL OSINT Tool Kit Lite.py"
 ```
 
 The CLI enforces Tor routing and basic stealth by default. If you want the Kyber vault features, install liboqs and the Python binding (`oqs`).
