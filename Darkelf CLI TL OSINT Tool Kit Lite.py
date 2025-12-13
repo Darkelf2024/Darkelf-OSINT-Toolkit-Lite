@@ -241,13 +241,36 @@ class DuckDuckGoLite:
     LITE_ONION = "https://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion/lite"
     HTML_CLEARNET = "https://duckduckgo.com/html/"
 
-    # Default use_tor=True to enforce Tor routing by default (stealth mode enabled)
     def __init__(self, use_tor: bool = True, proxies: Optional[Dict[str, str]] = None, user_agent: Optional[str] = None):
         self.session = requests.Session()
         self.use_tor = use_tor
-        # If use_tor True, default proxies point to localhost socks5h:9052 (matching original)
-        self.proxies = proxies or ({"http": "socks5h://127.0.0.1:9052", "https": "socks5h://127.0.0.1:9052"} if use_tor else None)
+
+        # Auto-detect Tor SOCKS port if none supplied
+        if proxies:
+            self.proxies = proxies
+        elif use_tor:
+            self.proxies = self._detect_tor_proxy()
+        else:
+            self.proxies = None
+
         self.session.headers.update({"User-Agent": user_agent or "DarkelfCLI/3.1 (OSINT) - Stealth/Tor"})
+
+    def _detect_tor_proxy(self) -> Dict[str, str]:
+        """Try common Tor proxy ports and return a working one."""
+        for port in (9050, 9150, 9052):
+            try:
+                s = socket.create_connection(("127.0.0.1", port), timeout=0.5)
+                s.close()
+                return {
+                    "http": f"socks5h://127.0.0.1:{port}",
+                    "https": f"socks5h://127.0.0.1:{port}"
+                }
+            except Exception:
+                continue
+
+        # Last resort: return None, so clearnet works instead of failing
+        _log("Tor not detected — proxy disabled, using clearnet only", "WARN")
+        return None
 
 
     def search(self, query: str, max_results: int = 8, use_onion: bool = False) -> List[Tuple[str, str, str]]:
