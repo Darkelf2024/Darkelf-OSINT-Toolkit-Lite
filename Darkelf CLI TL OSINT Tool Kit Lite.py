@@ -132,10 +132,17 @@ try:
     import oqs
 except Exception:
     oqs = None
+    
+from stem.control import Controller
+from stem.process import launch_tor_with_config
+from stem import Signal
 
 # ---------------------------
-# Global Console / Logging
+# Global Console and Logger
 # ---------------------------
+console = Console()
+LOG_PATH = "darkelf_activity.log"
+
 console = Console()
 LOG_PATH = "darkelf_activity.log"
 
@@ -154,6 +161,51 @@ def _log(msg: str, level: str = "INFO"):
     else:
         console.print(f"[cyan]{line}[/cyan]")
 
+# ---------------------------
+# Tor Manager Using Stem
+# ---------------------------
+class TorManager:
+    def __init__(self, tor_binary="tor", socks_port=9050, control_port=9051):
+        self.tor_binary = tor_binary
+        self.socks_port = socks_port
+        self.control_port = control_port
+        self.tor_process = None
+        self.tor_controller = None
+
+    def start_tor(self):
+        """Launch Tor process and establish a control connection."""
+        try:
+            self.tor_process = launch_tor_with_config(
+                config={"SOCKSPort": str(self.socks_port), "ControlPort": str(self.control_port)},
+                init_msg_handler=self._tor_output_handler,
+                tor_cmd=self.tor_binary,
+            )
+            self.tor_controller = Controller.from_port(port=self.control_port)
+            self.tor_controller.authenticate()
+            self.tor_controller.signal(Signal.NEWNYM)
+            console.print(f"[green]Tor started successfully on SOCKSPort {self.socks_port} and ControlPort {self.control_port}[/green]")
+        except Exception as e:
+            _log(f"Failed to start Tor: {e}", "ERROR")
+            raise RuntimeError("Tor startup failed. Ensure that Tor is installed and accessible.")
+
+    def new_identity(self):
+        """Request a new identity from the Tor network."""
+        if self.tor_controller:
+            self.tor_controller.signal(Signal.NEWNYM)
+            console.print("[green]Tor network identity refreshed successfully.[/green]")
+
+    def stop_tor(self):
+        """Stop the Tor process and clean up controller."""
+        if self.tor_controller:
+            self.tor_controller.close()
+            console.print("[yellow]Tor controller closed.[/yellow]")
+        if self.tor_process:
+            self.tor_process.terminate()
+            console.print("[yellow]Tor process terminated.[/yellow]")
+
+    @staticmethod
+    def _tor_output_handler(line):
+        _log(line.strip(), level="INFO")
 
 # ---------------------------
 # Utility helpers
@@ -568,6 +620,7 @@ class DarkelfCLI:
         if not self.vault.available():
             console.print("[yellow]PQ Vault unavailable: oqs package not installed.[/yellow]")
             return
+
         table = Table(show_header=False, box=box.MINIMAL)
         table.add_column("", style="cyan")
         table.add_column("", style="white")
@@ -575,6 +628,7 @@ class DarkelfCLI:
         table.add_row("2) encrypt", "Encrypt plaintext into vault")
         table.add_row("3) decrypt", "Decrypt a vault file")
         choice = Prompt.ask("Choose", choices=["1", "2", "3"], default="1")
+
         if choice == "1":
             self.vault.generate_keys()
             console.print("[green]Keypair created.[/green]")
@@ -582,21 +636,37 @@ class DarkelfCLI:
             text = Prompt.ask("Text to encrypt (single line)").strip()
             path = self.vault.encrypt(text)
             console.print(f"[green]Encrypted -> {path}[/green]")
-        else:
+        elif choice == "3":
+            # List vault files
             files = [f for f in os.listdir(self.vault.vault_dir) if f.endswith(".dat")]
             if not files:
                 console.print("[yellow]No vault files found.[/yellow]")
                 return
-            for i, f in enumerate(files, 1):
-                console.print(f" {i}) {f}")
-            idx = int(Prompt.ask("File # to decrypt", default="1"))
-            fname = files[idx - 1]
+            
+            # Display numbered file list
+            console.print("[bold cyan]Available Vault Files:[/bold cyan]")
+            for idx, file_name in enumerate(files, start=1):
+                console.print(f" {idx}) {file_name}")
+            
+            while True:
+                try:
+                    # Prompt for file number (ensure valid integer within range)
+                    file_index = int(Prompt.ask("File # to decrypt"))
+                    if 1 <= file_index <= len(files):
+                        file_name = files[file_index - 1]  # Get the selected file
+                        break
+                    else:
+                        console.print("[red]Invalid selection. Please choose a valid file number.[/red]")
+                except ValueError:
+                    console.print("[red]Invalid input. Please enter a number corresponding to the file.[/red]")
+            
+            # Attempt to decrypt the selected file
             try:
-                content = self.vault.decrypt(fname)
-                console.print(Panel(Text(content), title=fname))
+                content = self.vault.decrypt(file_name)
+                console.print(Panel(Text(content), title=file_name))
             except Exception as e:
                 console.print(f"[red]Decrypt failed: {e}[/red]")
-
+                
     def cmd_help(self):
         console.print(Rule("Help"))
         console.print("This is a refactored, safer Darkelf CLI. Use responsibly.")
@@ -654,4 +724,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main() 
