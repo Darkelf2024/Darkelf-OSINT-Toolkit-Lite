@@ -143,10 +143,6 @@ from stem import Signal
 console = Console()
 LOG_PATH = "darkelf_activity.log"
 
-console = Console()
-LOG_PATH = "darkelf_activity.log"
-
-
 def _log(msg: str, level: str = "INFO"):
     line = f"{datetime.utcnow().isoformat()} [{level}] {msg}"
     try:
