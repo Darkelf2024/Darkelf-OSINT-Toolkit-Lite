@@ -137,6 +137,9 @@ from stem.control import Controller
 from stem.process import launch_tor_with_config
 from stem import Signal
 
+TOR_PORT = 9052  # detected from tor startup
+PROXY = f"socks5h://127.0.0.1:{TOR_PORT}"
+
 # ---------------------------
 # Global Console and Logger
 # ---------------------------
