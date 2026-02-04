@@ -1,4 +1,4 @@
-# Darkelf CLI TL OSINT Tool Kit v3.0 – Secure, Privacy-Focused Command-Line Web Browser
+# Darkelf CLI TL OSINT Tool Kit Lite v3.0 – Secure, Privacy-Focused Command-Line Web Browser
 # Copyright (C) 2025 Dr. Kevin Moore
 #
 # SPDX-License-Identifier: LGPL-3.0-or-later
@@ -541,7 +541,7 @@ PWA_INDEX_HTML = r"""<!DOCTYPE html>
   <input type="file" id="fileInput" accept=".json"/>
 
   <section id="report">
-    <p>No report loaded.</p>
+    <p>Select a Darkelf Scribe JSON report to view.</p>
   </section>
 
 <script>
@@ -558,7 +558,7 @@ PWA_INDEX_HTML = r"""<!DOCTYPE html>
       try {
         const data = JSON.parse(reader.result);
         render(data);
-      } catch (err) {
+      } catch {
         reportEl.innerHTML = "<p>Invalid or unsupported file.</p>";
       }
     };
@@ -566,6 +566,36 @@ PWA_INDEX_HTML = r"""<!DOCTYPE html>
   });
 
   function render(data) {
+    /* ---- Legacy Darkelf Scribe compatibility ---- */
+    if (!data.summary && data.content) {
+      const parts = data.content.split(/\n\n+/);
+
+      const summaryPart = parts.find(p => p.startsWith("Summary:"));
+      const evidencePart = parts.find(p => p.startsWith("Evidence:"));
+      const sourcesPart = parts.find(p => p.startsWith("Sources:"));
+
+      data.summary = summaryPart
+        ? summaryPart.replace("Summary:", "").trim()
+        : "";
+
+      data.evidence = evidencePart
+        ? evidencePart
+            .split("\n")
+            .slice(1)
+            .map(l => l.replace(/^-\s*/, "").trim())
+            .filter(Boolean)
+        : [];
+
+      data.sources = sourcesPart
+        ? sourcesPart
+            .split("\n")
+            .slice(1)
+            .map(l => l.replace(/^-\s*/, "").trim())
+            .filter(Boolean)
+        : [];
+    }
+
+    /* ---- Render normalized report ---- */
     reportEl.innerHTML = `
       <h2>Summary</h2>
       <p>${data.summary || ""}</p>
@@ -603,20 +633,6 @@ PWA_SERVICE_WORKER_JS = """self.addEventListener("install", e => {
 });
 """
 
-def write_pwa_assets(base_dir: str):
-    os.makedirs(base_dir, exist_ok=True)
-
-    files = {
-        "index.html": PWA_INDEX_HTML,
-        "manifest.json": PWA_MANIFEST_JSON,
-        "service-worker.js": PWA_SERVICE_WORKER_JS,
-    }
-
-    for name, content in files.items():
-        path = os.path.join(base_dir, name)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(content)
-
 # ---------------------------
 # CLI: Lightweight, guided interactions
 # ---------------------------
@@ -636,6 +652,21 @@ class DarkelfCLI:
         self.ai_lock = threading.Lock()
         self.last_scribe_output = None
         self.pwa_server_running = False
+        self.pwa_port = 8765
+
+    def write_pwa_assets(self, base_dir: str):
+        os.makedirs(base_dir, exist_ok=True)
+
+        files = {
+            "index.html": PWA_INDEX_HTML,
+            "manifest.json": PWA_MANIFEST_JSON,
+            "service-worker.js": PWA_SERVICE_WORKER_JS,
+        }
+
+        for name, content in files.items():
+            path = os.path.join(base_dir, name)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
 
     def banner(self):
         console.clear()
@@ -790,7 +821,8 @@ class DarkelfCLI:
             console.print(f"[green]Encrypted -> {path}[/green]")
         elif choice == "3":
             # List vault files
-            files = [f for f in os.listdir(self.vault.vault_dir) if f.endswith(".dat")]
+            files = sorted(f for f in os.listdir(self.vault.vault_dir) if f.endswith(".dat")
+            )
             if not files:
                 console.print("[yellow]No vault files found.[/yellow]")
                 return
@@ -976,11 +1008,12 @@ class DarkelfCLI:
         """
         Darkelf Scribe wrapper around Darkelf OSINT AI.
         """
-        return self._darkelf_ai_run(
-            prompt=prompt,
-            model=model,
-            purpose="scribe"
-        )
+        result = self._darkelf_ai_run(prompt=prompt,model=model,purpose="scribe")
+
+        if result is None:
+            raise RuntimeError("Ollama returned no output")
+
+        return str(result)
 
     def _scribe_select_model(self, choice: str) -> str:
         if choice != "auto":
@@ -1087,85 +1120,86 @@ class DarkelfCLI:
         
     def _markdown_to_pdf(self, md_path: str) -> None:
         try:
-            subprocess.run(
-                ["pandoc", md_path, "-o", md_path.replace(".md", ".pdf")],
-                check=True
-            )
-        except Exception:
-            console.print(
-                "[yellow]Pandoc not found. PDF generation skipped.[/yellow]"
-            )
+            result = self._scribe_run_ollama(prompt, model)
+            callback(result)
+        except Exception as e:
+            callback(f"[ERROR] {e}")
 
     def _ai_worker(self):
         while True:
-            if not self.ai_queue:
-                break
+            with self.ai_lock:
+                if not self.ai_queue:
+                    self.ai_worker_running = False
+                    return
 
-            # Pop the next task safely
-            try:
                 prompt, model, callback = self.ai_queue.pop(0)
-            except IndexError:
-                break
 
             try:
-                result = self._darkelf_ai_run(prompt, model, purpose="scribe")
+                result = self._scribe_run_ollama(prompt, model)
                 callback(result)
             except Exception as e:
                 callback(f"[ERROR] {e}")
-
-        self.ai_worker_running = False
         
     def _enqueue_ai_task(self, prompt: str, model: str, callback):
-        self.ai_queue.append((prompt, model, callback))
+        with self.ai_lock:
+            self.ai_queue.append((prompt, model, callback))
 
-        if not self.ai_worker_running:
+            if self.ai_worker_running:
+                return
+
             self.ai_worker_running = True
-            threading.Thread(
-                target=self._ai_worker,
-                daemon=True
-            ).start()
+
+        threading.Thread(
+            target=self._ai_worker,
+            daemon=True
+        ).start()
+
             
-    def _launch_pwa_viewer(self, report_path: Optional[str] = None):
+    def _launch_pwa_viewer(self, filename=None):
         import http.server
         import socketserver
         import webbrowser
 
         pwa_dir = os.path.join(os.getcwd(), "darkelf_pwa")
-
-        # Always write assets first
-        write_pwa_assets(pwa_dir)
-
-        port = 8765
+        self.write_pwa_assets(pwa_dir)
 
         if self.pwa_server_running:
-            webbrowser.open(f"http://127.0.0.1:{port}/index.html")
+            webbrowser.open(f"http://127.0.0.1:{self.pwa_port}/index.html")
+            console.print("[green]Darkelf PWA Viewer already running.[/green]")
             return
 
-        class Handler(http.server.SimpleHTTPRequestHandler):
+        port = self.pwa_port
+
+        class PWARequestHandler(http.server.SimpleHTTPRequestHandler):
             def __init__(self, *args, **kwargs):
                 super().__init__(*args, directory=pwa_dir, **kwargs)
 
-            # Optional: silence TLS garbage logs
             def log_message(self, format, *args):
-                return
+                # Silence noisy default logging
+                pass
+
+            def do_GET(self):
+                if self.path == "/favicon.ico":
+                    self.send_response(204)
+                    self.end_headers()
+                    return
+                super().do_GET()
 
         class ReusableTCPServer(socketserver.TCPServer):
             allow_reuse_address = True
 
         def serve():
-            with ReusableTCPServer(("127.0.0.1", port), Handler) as httpd:
-                httpd.serve_forever()
+            try:
+                with ReusableTCPServer(("127.0.0.1", port), PWARequestHandler) as httpd:
+                    httpd.serve_forever()
+            except Exception as e:
+                _log(f"PWA server error: {e}", "ERROR")
 
         threading.Thread(target=serve, daemon=True).start()
         self.pwa_server_running = True
 
-        time.sleep(0.3)
-
-        url = f"http://127.0.0.1:{port}/index.html"
-        if report_path:
-            url += f"?autoload={os.path.basename(report_path)}"
-
-        webbrowser.open(url)
+        time.sleep(0.4)
+        webbrowser.open(f"http://127.0.0.1:{port}/index.html")
 
         console.print(
             "[green]Darkelf PWA Viewer launched (offline, local-only).[/green]"
@@ -1183,7 +1217,7 @@ class DarkelfCLI:
             "[cyan]viewer[/cyan]     — Open Darkelf Scribe Viewer\n"
             "[cyan]quit[/cyan]       — Exit Darkelf\n"
         )
-
+        
     def run(self):
         while self.running:
             choice = self.main_menu()
