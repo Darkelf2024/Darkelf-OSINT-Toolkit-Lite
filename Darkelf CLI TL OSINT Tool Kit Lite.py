@@ -657,9 +657,9 @@ class DarkelfCLI:
         menu.add_row("3) indicators", "Show extracted indicators and export")
         menu.add_row("4) fetch", "Fetch & preview a URL (safe-blocked) — via Tor")
         menu.add_row("5) vault", "Kyber vault operations (generate/encrypt/decrypt)")
-        menu.add_row("6) help", "Show help")
-        menu.add_row("7) scribe", "Darkelf Scribe — Draft TraceLabs / CTF submission (local AI)")
-        menu.add_row("8) viewer", "Open Darkelf Scribe PWA Viewer (offline)")
+        menu.add_row("6) scribe", "Darkelf Scribe — Draft TraceLabs / CTF submission (local AI)")
+        menu.add_row("7) viewer", "Open Darkelf Scribe PWA Viewer (offline)")
+        menu.add_row("8) help", "Show help")
         menu.add_row("q) quit", "Exit")
         console.print(menu)
         choice = Prompt.ask("Select", choices=["1", "2", "3", "4", "5", "6", "7", "8", "q"], default="1")
@@ -1171,6 +1171,19 @@ class DarkelfCLI:
             "[green]Darkelf PWA Viewer launched (offline, local-only).[/green]"
         )
         
+    def cmd_help(self):
+        console.print(
+            "[bold green]Darkelf CLI Help[/bold green]\n\n"
+            "[cyan]scan[/cyan]       — Quick OSINT scan (email, username, phone, domain)\n"
+            "[cyan]dork[/cyan]       — Run DuckDuckGo dorks via Tor\n"
+            "[cyan]indicators[/cyan] — View/export extracted indicators\n"
+            "[cyan]fetch[/cyan]      — Fetch and preview a URL safely\n"
+            "[cyan]vault[/cyan]      — Kyber vault operations\n"
+            "[cyan]scribe[/cyan]     — Draft TraceLabs/CTF report (local AI)\n"
+            "[cyan]viewer[/cyan]     — Open Darkelf Scribe Viewer\n"
+            "[cyan]quit[/cyan]       — Exit Darkelf\n"
+        )
+
     def run(self):
         while self.running:
             choice = self.main_menu()
@@ -1185,11 +1198,11 @@ class DarkelfCLI:
             elif choice == "5":
                 self.cmd_vault()
             elif choice == "6":
-                self.cmd_help()
-            elif choice == "7":
                 self.cmd_scribe()
-            elif choice == "8":
+            elif choice == "7":
                 self._launch_pwa_viewer()
+            elif choice == "8":
+                self.cmd_help()
             elif choice == "q":
                 if Confirm.ask("Exit Darkelf CLI?"):
                     self.running = False
@@ -1205,18 +1218,6 @@ def parse_args():
     p.add_argument("--quiet", action="store_true", help="Minimal console output")
     return p.parse_args()
 
-def cmd_help(self):
-    console.print(
-        "[bold green]Darkelf CLI Help[/bold green]\n\n"
-        "[cyan]scan[/cyan]       — Quick OSINT scan (email, username, phone, domain)\n"
-        "[cyan]dork[/cyan]       — Run DuckDuckGo dorks via Tor\n"
-        "[cyan]indicators[/cyan] — View/export extracted indicators\n"
-        "[cyan]fetch[/cyan]      — Fetch and preview a URL safely\n"
-        "[cyan]vault[/cyan]      — Kyber vault operations\n"
-        "[cyan]scribe[/cyan]     — Draft TraceLabs/CTF report (local AI)\n"
-        "[cyan]viewer[/cyan]     — Open Darkelf Scribe Viewer\n"
-        "[cyan]quit[/cyan]       — Exit Darkelf\n"
-    )
 
 def main():
     args = parse_args()
@@ -1239,5 +1240,3 @@ def main():
 
 if __name__ == "__main__":
     main() 
-
-
