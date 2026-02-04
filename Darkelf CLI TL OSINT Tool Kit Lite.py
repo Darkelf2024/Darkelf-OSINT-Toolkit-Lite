@@ -1,4 +1,4 @@
-# Darkelf CLI TL OSINT Tool Kit Lite v3.0 – Secure, Privacy-Focused Command-Line Web Browser
+# Darkelf CLI TL OSINT Tool Kit v3.0 – Secure, Privacy-Focused Command-Line Web Browser
 # Copyright (C) 2025 Dr. Kevin Moore
 #
 # SPDX-License-Identifier: LGPL-3.0-or-later
@@ -496,7 +496,126 @@ class KyberVault:
         if derived != key:
             raise ValueError("Decryption key mismatch.")
         return token.decode()
+        
+PWA_INDEX_HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Darkelf Scribe Viewer</title>
+  <link rel="manifest" href="manifest.json">
 
+  <style>
+    body {
+      background: radial-gradient(circle at top, #0f1f17, #030806);
+      color: #d0f5df;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      margin: 0;
+      padding: 2rem;
+    }
+
+    h1, h2 {
+      color: #3aff9e;
+    }
+
+    input {
+      margin: 1rem 0;
+    }
+
+    section {
+      background: rgba(0, 0, 0, 0.55);
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin-top: 1.5rem;
+      box-shadow: 0 0 40px rgba(0, 255, 140, 0.18);
+    }
+
+    ul {
+      padding-left: 1.2rem;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>📝 Darkelf Scribe Reports</h1>
+
+  <input type="file" id="fileInput" accept=".json"/>
+
+  <section id="report">
+    <p>No report loaded.</p>
+  </section>
+
+<script>
+(function () {
+  const reportEl = document.getElementById("report");
+  const fileInput = document.getElementById("fileInput");
+
+  fileInput.addEventListener("change", e => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const data = JSON.parse(reader.result);
+        render(data);
+      } catch (err) {
+        reportEl.innerHTML = "<p>Invalid or unsupported file.</p>";
+      }
+    };
+    reader.readAsText(file);
+  });
+
+  function render(data) {
+    reportEl.innerHTML = `
+      <h2>Summary</h2>
+      <p>${data.summary || ""}</p>
+
+      <h2>Evidence</h2>
+      <ul>${(data.evidence || []).map(e => `<li>${e}</li>`).join("")}</ul>
+
+      <h2>Sources</h2>
+      <ul>${(data.sources || []).map(s => `<li>${s}</li>`).join("")}</ul>
+    `;
+  }
+})();
+</script>
+
+</body>
+</html>
+"""
+
+PWA_MANIFEST_JSON = """{
+  "name": "Darkelf Scribe",
+  "short_name": "Darkelf",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#111111"
+}
+"""
+
+PWA_SERVICE_WORKER_JS = """self.addEventListener("install", e => {
+  e.waitUntil(
+    caches.open("darkelf-scribe").then(cache =>
+      cache.addAll(["index.html", "manifest.json"])
+    )
+  );
+});
+"""
+
+def write_pwa_assets(base_dir: str):
+    os.makedirs(base_dir, exist_ok=True)
+
+    files = {
+        "index.html": PWA_INDEX_HTML,
+        "manifest.json": PWA_MANIFEST_JSON,
+        "service-worker.js": PWA_SERVICE_WORKER_JS,
+    }
+
+    for name, content in files.items():
+        path = os.path.join(base_dir, name)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(content)
 
 # ---------------------------
 # CLI: Lightweight, guided interactions
@@ -782,57 +901,56 @@ class DarkelfCLI:
             self._scribe_export(output)
             
     def _scribe_export(self, text: str):
-        parsed = self._parse_scribe_output(text)
-
-        report = {
-            "metadata": {
-                "generated_at": datetime.utcnow().isoformat() + "Z",
-                "tool": "Darkelf Scribe",
-                "version": "3.1",
-                "report_type": "OSINT Draft",
-                "review_status": "draft"
-            },
-            "summary": parsed["summary"],
-            "evidence": parsed["evidence"],
-            "sources": parsed["sources"],
-            "investigator_notes": "Generated from investigator-provided notes",
-            "extracted_indicators": {
-                "emails": sorted(self.indicators.emails),
-                "usernames": sorted(self.indicators.usernames),
-                "domains": sorted(self.indicators.domains),
-                "ips": sorted(self.indicators.ips),
-                "hashes": sorted(self.indicators.hashes),
-                "phones": sorted(self.indicators.phones),
-            },
-            "legal_notice": (
-                "This report is based solely on publicly accessible information "
-                "and is provided for investigative and educational purposes only."
-            )
-        }
-
-        self._validate_schema(report, SCRIBE_REPORT_SCHEMA)
-
         export_format = Prompt.ask(
             "Export format",
-            choices=["json", "md", "md+pdf"],
+            choices=["json", "md", "pdf"],
             default="json"
         )
 
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+
         if export_format == "json":
-            filename = Prompt.ask("Filename", default="darkelf_scribe_report.json")
+            filename = f"darkelf_scribe_{timestamp}.json"
+            payload = {
+                "schema": "darkelf.scribe.v1",
+                "generated_at": datetime.utcnow().isoformat(),
+                "summary": self._extract_section(text, "Summary"),
+                "evidence": self._extract_list(text, "Evidence"),
+                "sources": self._extract_list(text, "Sources"),
+                "raw_output": text
+            }
+
             with open(filename, "w", encoding="utf-8") as f:
-                json.dump(report, f, indent=2)
+                json.dump(payload, f, indent=2)
 
-        else:
-            filename = Prompt.ask("Filename", default="darkelf_scribe_report.md")
-            md = self._scribe_to_markdown(report)
+            self._launch_pwa_viewer(filename)
+
+        elif export_format == "md":
+            filename = f"darkelf_scribe_{timestamp}.md"
             with open(filename, "w", encoding="utf-8") as f:
-                f.write(md)
+                f.write(text)
 
-            if export_format == "md+pdf":
-                self._markdown_to_pdf(filename)
+            self._launch_pwa_viewer(filename)
 
-        console.print(f"[green]Saved to {os.path.abspath(filename)}[/green]")
+        else:  # pdf
+            filename = f"darkelf_scribe_{timestamp}.pdf"
+            md_tmp = f"/tmp/{timestamp}.md"
+
+            with open(md_tmp, "w", encoding="utf-8") as f:
+                f.write(text)
+
+            os.system(f"pandoc {md_tmp} -o {filename}")
+            self._launch_pwa_viewer(filename)
+
+        console.print(f"[green]Saved to {filename}[/green]")
+        
+    def _extract_section(self, text: str, header: str) -> str:
+        match = re.search(rf"{header}:\n(.*?)(\n[A-Z][a-z]+:|\Z)", text, re.S)
+        return match.group(1).strip() if match else ""
+
+    def _extract_list(self, text: str, header: str) -> list:
+        section = self._extract_section(text, header)
+        return [line.strip("- ").strip() for line in section.splitlines() if line.strip()]
 
     def _darkelf_ai_run(self, prompt: str, model: str, purpose: str = "scribe") -> str:
         """
@@ -1007,124 +1125,52 @@ class DarkelfCLI:
                 daemon=True
             ).start()
             
-    def write_pwa_assets(self, base_dir: str):
-        os.makedirs(base_dir, exist_ok=True)
-
-        files = {
-            "index.html": """<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Darkelf Scribe Viewer</title>
-  <link rel="manifest" href="manifest.json">
-</head>
-<body>
-  <h1>Darkelf Scribe Reports</h1>
-  <input type="file" id="fileInput" />
-  <section id="report"></section>
-  <script src="app.js"></script>
-</body>
-</html>
-""",
-            "app.js": """document.getElementById("fileInput").addEventListener("change", e => {
-  const file = e.target.files[0];
-  if (!file) return;
-
-  const reader = new FileReader();
-  reader.onload = () => {
-    const data = JSON.parse(reader.result);
-    render(data);
-  };
-  reader.readAsText(file);
-});
-
-function render(data) {
-  document.getElementById("report").innerHTML = `
-    <h2>Summary</h2>
-    <p>${data.summary || ""}</p>
-
-    <h2>Evidence</h2>
-    <ul>${(data.evidence || []).map(e => `<li>${e}</li>`).join("")}</ul>
-
-    <h2>Sources</h2>
-    <ul>${(data.sources || []).map(s => `<li>${s}</li>`).join("")}</ul>
-  `;
-}
-
-if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("service-worker.js");
-}
-""",
-            "manifest.json": """{
-  "name": "Darkelf Scribe",
-  "short_name": "Darkelf",
-  "start_url": "./index.html",
-  "display": "standalone",
-  "background_color": "#000000",
-  "theme_color": "#111111"
-}
-""",
-            "service-worker.js": """self.addEventListener("install", e => {
-  e.waitUntil(
-    caches.open("darkelf-scribe").then(cache =>
-      cache.addAll(["index.html", "app.js"])
-    )
-  );
-});
-"""
-        }
-
-        for name, content in files.items():
-            path = os.path.join(base_dir, name)
-            if not os.path.exists(path):
-                with open(path, "w", encoding="utf-8") as f:
-                    f.write(content)
-
-                
-    def _launch_pwa_viewer(self):
+    def _launch_pwa_viewer(self, report_path: Optional[str] = None):
         import http.server
         import socketserver
         import webbrowser
 
+        pwa_dir = os.path.join(os.getcwd(), "darkelf_pwa")
+
+        # Always write assets first
+        write_pwa_assets(pwa_dir)
+
         port = 8765
 
-        if getattr(self, "pwa_server_running", False):
+        if self.pwa_server_running:
             webbrowser.open(f"http://127.0.0.1:{port}/index.html")
-            console.print(
-                "[green]Darkelf PWA Viewer already running — opened in browser.[/green]"
-            )
             return
 
-        pwa_dir = os.path.join(os.getcwd(), "darkelf_pwa")
-        self.write_pwa_assets(pwa_dir)
-        os.chdir(pwa_dir)
+        class Handler(http.server.SimpleHTTPRequestHandler):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, directory=pwa_dir, **kwargs)
+
+            # Optional: silence TLS garbage logs
+            def log_message(self, format, *args):
+                return
+
+        class ReusableTCPServer(socketserver.TCPServer):
+            allow_reuse_address = True
 
         def serve():
-            handler = http.server.SimpleHTTPRequestHandler
-
-            class ReusableTCPServer(socketserver.TCPServer):
-                allow_reuse_address = True
-
-            try:
-                with ReusableTCPServer(("127.0.0.1", port), handler) as httpd:
-                    httpd.serve_forever()
-            except OSError as e:
-                _log(f"PWA server error: {e}", "ERROR")
+            with ReusableTCPServer(("127.0.0.1", port), Handler) as httpd:
+                httpd.serve_forever()
 
         threading.Thread(target=serve, daemon=True).start()
-
-        # Mark server as running before opening browser
         self.pwa_server_running = True
 
-        # Small delay to ensure server is bound before opening browser
-        time.sleep(0.4)
+        time.sleep(0.3)
 
-        webbrowser.open(f"http://127.0.0.1:{port}/index.html")
+        url = f"http://127.0.0.1:{port}/index.html"
+        if report_path:
+            url += f"?autoload={os.path.basename(report_path)}"
+
+        webbrowser.open(url)
 
         console.print(
             "[green]Darkelf PWA Viewer launched (offline, local-only).[/green]"
         )
-
+        
     def run(self):
         while self.running:
             choice = self.main_menu()
@@ -1181,4 +1227,5 @@ def main():
 
 if __name__ == "__main__":
     main() 
+
 
