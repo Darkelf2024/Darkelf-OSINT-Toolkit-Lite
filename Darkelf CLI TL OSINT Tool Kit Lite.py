@@ -133,6 +133,15 @@ try:
 except Exception:
     oqs = None
     
+import subprocess
+
+try:
+    import psutil  # optional, for RAM detection
+except Exception:
+    psutil = None
+    
+from typing import Any
+
 from stem.control import Controller
 from stem.process import launch_tor_with_config
 from stem import Signal
@@ -164,7 +173,7 @@ def _log(msg: str, level: str = "INFO"):
 # Tor Manager Using Stem
 # ---------------------------
 class TorManager:
-    def __init__(self, tor_binary="tor", socks_port=9050, control_port=9051):
+    def __init__(self, tor_binary="tor", socks_port=9052, control_port=9053):
         self.tor_binary = tor_binary
         self.socks_port = socks_port
         self.control_port = control_port
@@ -230,7 +239,23 @@ def pretty_table(rows: Iterable[Tuple], columns: List[str], title: Optional[str]
     for row in rows:
         table.add_row(*[str(x) for x in row])
     console.print(table)
-
+    
+SCRIBE_REPORT_SCHEMA = {
+    "type": "object",
+    "required": ["metadata", "summary", "evidence", "sources"],
+    "properties": {
+        "metadata": {
+            "type": "object",
+            "required": ["generated_at", "tool", "version", "report_type"],
+        },
+        "summary": {"type": "string"},
+        "evidence": {"type": "array", "items": {"type": "string"}},
+        "sources": {"type": "array", "items": {"type": "string"}},
+        "investigator_notes": {"type": "string"},
+        "extracted_indicators": {"type": "object"},
+        "legal_notice": {"type": "string"}
+    }
+}
 
 # ---------------------------
 # Indicator Extraction
@@ -485,6 +510,13 @@ class DarkelfCLI:
         self.safe_blocklist = {"google-analytics.com", "doubleclick.net", "facebook.net"}
         self.running = True
         self.stealth_mode = True  # explicit flag for UI/logic if needed
+        
+        # Darkelf OSINT Ai Queue
+        self.ai_queue = []
+        self.ai_worker_running = False
+        self.ai_lock = threading.Lock()
+        self.last_scribe_output = None
+        self.pwa_server_running = False
 
     def banner(self):
         console.clear()
@@ -507,9 +539,11 @@ class DarkelfCLI:
         menu.add_row("4) fetch", "Fetch & preview a URL (safe-blocked) — via Tor")
         menu.add_row("5) vault", "Kyber vault operations (generate/encrypt/decrypt)")
         menu.add_row("6) help", "Show help")
+        menu.add_row("7) scribe", "Darkelf Scribe — Draft TraceLabs / CTF submission (local AI)")
+        menu.add_row("8) viewer", "Open Darkelf Scribe PWA Viewer (offline)")
         menu.add_row("q) quit", "Exit")
         console.print(menu)
-        choice = Prompt.ask("Select", choices=["1", "2", "3", "4", "5", "6", "q"], default="1")
+        choice = Prompt.ask("Select", choices=["1", "2", "3", "4", "5", "6", "7", "8", "q"], default="1")
         return choice
 
     def cmd_scan(self):
@@ -666,11 +700,430 @@ class DarkelfCLI:
             except Exception as e:
                 console.print(f"[red]Decrypt failed: {e}[/red]")
                 
-    def cmd_help(self):
-        console.print(Rule("Help"))
-        console.print("This is a refactored, safer Darkelf CLI. Use responsibly.")
-        console.print("Stealth/Tor are enforced by default in this edition. Ensure Tor is running on localhost:9052.")
-        console.print("Commands are intentionally conservative; for interactive advanced features see the developer docs.")
+    def cmd_scribe(self):
+        console.print(Rule("Darkelf Scribe 📝"))
+
+        console.print(
+            "[dim]Local AI drafting via Ollama. Uses only your notes and extracted indicators. "
+            "No data leaves your system.[/dim]"
+        )
+
+        notes = Prompt.ask(
+            "Paste investigator notes or working summary",
+            show_default=False
+        ).strip()
+
+        if not notes:
+            console.print("[yellow]No notes provided. Aborting.[/yellow]")
+            return
+
+        # --- Redaction preview ---
+        redacted = self._scribe_redact_preview(notes)
+        console.print(Panel(redacted, title="Redaction Preview"))
+
+        if not Confirm.ask("Proceed with these notes?", default=True):
+            console.print("[yellow]Cancelled by user.[/yellow]")
+            return
+
+        model_choice = Prompt.ask(
+            "Model",
+            choices=["auto", "mistral", "mixtral"],
+            default="auto"
+        )
+
+        model = self._scribe_select_model(model_choice)
+
+        prompt = self._scribe_prompt(
+            redacted_notes=redacted,
+            indicators={
+                "emails": sorted(self.indicators.emails),
+                "usernames": sorted(self.indicators.usernames),
+                "domains": sorted(self.indicators.domains),
+                "ips": sorted(self.indicators.ips),
+                "hashes": sorted(self.indicators.hashes),
+                "phones": sorted(self.indicators.phones),
+            }
+        )
+
+        # Queue or blocking execution
+        use_queue = Confirm.ask(
+            "Run AI in background (non-blocking)?",
+            default=False
+        )
+
+        def on_result(output: str):
+            # Store the result for later export
+            self.last_scribe_output = output
+
+            console.print(Panel(output, title="Draft Submission"))
+            console.print(
+                "[yellow]Draft ready. Use the export option to save it.[/yellow]"
+            )
+
+        if use_queue:
+            console.print(
+                "[cyan]Darkelf AI task queued. You may continue using the tool.[/cyan]"
+            )
+            self._enqueue_ai_task(prompt, model, on_result)
+            return
+
+        # Blocking execution (default)
+        try:
+            with console.status("[bold green]Darkelf OSINT AI is thinking…"):
+                output = self._scribe_run_ollama(prompt, model)
+        except Exception as e:
+            console.print(f"[red]Darkelf Scribe error: {e}[/red]")
+            _log(f"Scribe error: {e}", "ERROR")
+            return
+
+        console.print(Panel(output, title="Draft Submission"))
+
+        if Confirm.ask("Export this draft?", default=False):
+            self._scribe_export(output)
+            
+    def _scribe_export(self, text: str):
+        parsed = self._parse_scribe_output(text)
+
+        report = {
+            "metadata": {
+                "generated_at": datetime.utcnow().isoformat() + "Z",
+                "tool": "Darkelf Scribe",
+                "version": "3.1",
+                "report_type": "OSINT Draft",
+                "review_status": "draft"
+            },
+            "summary": parsed["summary"],
+            "evidence": parsed["evidence"],
+            "sources": parsed["sources"],
+            "investigator_notes": "Generated from investigator-provided notes",
+            "extracted_indicators": {
+                "emails": sorted(self.indicators.emails),
+                "usernames": sorted(self.indicators.usernames),
+                "domains": sorted(self.indicators.domains),
+                "ips": sorted(self.indicators.ips),
+                "hashes": sorted(self.indicators.hashes),
+                "phones": sorted(self.indicators.phones),
+            },
+            "legal_notice": (
+                "This report is based solely on publicly accessible information "
+                "and is provided for investigative and educational purposes only."
+            )
+        }
+
+        self._validate_schema(report, SCRIBE_REPORT_SCHEMA)
+
+        export_format = Prompt.ask(
+            "Export format",
+            choices=["json", "md", "md+pdf"],
+            default="json"
+        )
+
+        if export_format == "json":
+            filename = Prompt.ask("Filename", default="darkelf_scribe_report.json")
+            with open(filename, "w", encoding="utf-8") as f:
+                json.dump(report, f, indent=2)
+
+        else:
+            filename = Prompt.ask("Filename", default="darkelf_scribe_report.md")
+            md = self._scribe_to_markdown(report)
+            with open(filename, "w", encoding="utf-8") as f:
+                f.write(md)
+
+            if export_format == "md+pdf":
+                self._markdown_to_pdf(filename)
+
+        console.print(f"[green]Saved to {os.path.abspath(filename)}[/green]")
+
+    def _darkelf_ai_run(self, prompt: str, model: str, purpose: str = "scribe") -> str:
+        """
+        Central Darkelf OSINT AI execution layer.
+        All local AI usage should go through here.
+        """
+        _log(f"Darkelf OSINT AI invoked | purpose={purpose} | model={model}")
+
+        proc = subprocess.run(
+            ["ollama", "run", model],
+            input=prompt.encode("utf-8"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=180
+        )
+
+        if proc.returncode != 0:
+            raise RuntimeError(proc.stderr.decode("utf-8"))
+
+        return proc.stdout.decode("utf-8").strip()
+        
+    def _scribe_run_ollama(self, prompt: str, model: str) -> str:
+        """
+        Darkelf Scribe wrapper around Darkelf OSINT AI.
+        """
+        return self._darkelf_ai_run(
+            prompt=prompt,
+            model=model,
+            purpose="scribe"
+        )
+
+    def _scribe_select_model(self, choice: str) -> str:
+        if choice != "auto":
+            return choice
+
+        if psutil:
+            try:
+                ram_gb = psutil.virtual_memory().total / (1024 ** 3)
+                return "mixtral" if ram_gb >= 24 else "mistral"
+            except Exception:
+                pass
+
+        return "mistral"
+        
+    def _scribe_redact_preview(self, text: str) -> str:
+        text = EMAIL_RE.sub("[REDACTED_EMAIL]", text)
+        text = IPV4_RE.sub("[REDACTED_IP]", text)
+        return text
+        
+    def _scribe_prompt(self, redacted_notes: str, indicators: dict) -> str:
+        return f"""
+    You are an OSINT reporting assistant drafting a TraceLabs or CTF submission.
+
+    Rules:
+    - Use ONLY the provided notes and indicators
+    - Do NOT speculate or invent facts
+    - Neutral, professional tone
+    - Draft only; human review required
+
+    Output format EXACTLY as follows:
+
+    Summary:
+    <concise factual summary>
+
+    Evidence:
+    - <bullet points tied directly to notes or indicators>
+
+    Sources:
+    - <general source types only>
+
+    Investigator Notes:
+    {redacted_notes}
+
+    Extracted Indicators:
+    {json.dumps(indicators, indent=2)}
+    """
+    
+    def _parse_scribe_output(self, text: str) -> Dict[str, Any]:
+        def section(name, next_name=None):
+            pattern = rf"{name}:\s*(.*)"
+            if next_name:
+                pattern = rf"{name}:\s*(.*?)\n\s*{next_name}:"
+            m = re.search(pattern, text, re.S | re.I)
+            return m.group(1).strip() if m else ""
+
+        summary = section("Summary", "Evidence")
+        evidence_raw = section("Evidence", "Sources")
+        sources_raw = section("Sources", "Investigator Notes")
+
+        evidence = [
+            line.strip("-• ").strip()
+            for line in evidence_raw.splitlines()
+            if line.strip()
+        ]
+
+        sources = [
+            line.strip("-• ").strip()
+            for line in sources_raw.splitlines()
+            if line.strip()
+        ]
+
+        return {
+            "summary": summary,
+            "evidence": evidence,
+            "sources": sources,
+        }
+        
+    def _validate_schema(self, data: dict, schema: dict) -> None:
+        for key in schema.get("required", []):
+            if key not in data:
+                raise ValueError(f"Missing required field: {key}")
+                
+    def _scribe_to_markdown(self, report: dict) -> str:
+        md = []
+        md.append("# OSINT Draft Report\n")
+        md.append("## Summary\n")
+        md.append(report["summary"] + "\n")
+
+        md.append("## Evidence\n")
+        for e in report["evidence"]:
+            md.append(f"- {e}")
+        md.append("")
+
+        md.append("## Sources\n")
+        for s in report["sources"]:
+            md.append(f"- {s}")
+        md.append("")
+
+        if report.get("investigator_notes"):
+            md.append("## Investigator Notes\n")
+            md.append(report["investigator_notes"] + "\n")
+
+        return "\n".join(md)
+        
+    def _markdown_to_pdf(self, md_path: str) -> None:
+        try:
+            subprocess.run(
+                ["pandoc", md_path, "-o", md_path.replace(".md", ".pdf")],
+                check=True
+            )
+        except Exception:
+            console.print(
+                "[yellow]Pandoc not found. PDF generation skipped.[/yellow]"
+            )
+
+    def _ai_worker(self):
+        while True:
+            if not self.ai_queue:
+                break
+
+            # Pop the next task safely
+            try:
+                prompt, model, callback = self.ai_queue.pop(0)
+            except IndexError:
+                break
+
+            try:
+                result = self._darkelf_ai_run(prompt, model, purpose="scribe")
+                callback(result)
+            except Exception as e:
+                callback(f"[ERROR] {e}")
+
+        self.ai_worker_running = False
+        
+    def _enqueue_ai_task(self, prompt: str, model: str, callback):
+        self.ai_queue.append((prompt, model, callback))
+
+        if not self.ai_worker_running:
+            self.ai_worker_running = True
+            threading.Thread(
+                target=self._ai_worker,
+                daemon=True
+            ).start()
+            
+    def write_pwa_assets(self, base_dir: str):
+        os.makedirs(base_dir, exist_ok=True)
+
+        files = {
+            "index.html": """<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Darkelf Scribe Viewer</title>
+  <link rel="manifest" href="manifest.json">
+</head>
+<body>
+  <h1>Darkelf Scribe Reports</h1>
+  <input type="file" id="fileInput" />
+  <section id="report"></section>
+  <script src="app.js"></script>
+</body>
+</html>
+""",
+            "app.js": """document.getElementById("fileInput").addEventListener("change", e => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = () => {
+    const data = JSON.parse(reader.result);
+    render(data);
+  };
+  reader.readAsText(file);
+});
+
+function render(data) {
+  document.getElementById("report").innerHTML = `
+    <h2>Summary</h2>
+    <p>${data.summary || ""}</p>
+
+    <h2>Evidence</h2>
+    <ul>${(data.evidence || []).map(e => `<li>${e}</li>`).join("")}</ul>
+
+    <h2>Sources</h2>
+    <ul>${(data.sources || []).map(s => `<li>${s}</li>`).join("")}</ul>
+  `;
+}
+
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("service-worker.js");
+}
+""",
+            "manifest.json": """{
+  "name": "Darkelf Scribe",
+  "short_name": "Darkelf",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#111111"
+}
+""",
+            "service-worker.js": """self.addEventListener("install", e => {
+  e.waitUntil(
+    caches.open("darkelf-scribe").then(cache =>
+      cache.addAll(["index.html", "app.js"])
+    )
+  );
+});
+"""
+        }
+
+        for name, content in files.items():
+            path = os.path.join(base_dir, name)
+            if not os.path.exists(path):
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(content)
+
+                
+    def _launch_pwa_viewer(self):
+        import http.server
+        import socketserver
+        import webbrowser
+
+        port = 8765
+
+        if getattr(self, "pwa_server_running", False):
+            webbrowser.open(f"http://127.0.0.1:{port}/index.html")
+            console.print(
+                "[green]Darkelf PWA Viewer already running — opened in browser.[/green]"
+            )
+            return
+
+        pwa_dir = os.path.join(os.getcwd(), "darkelf_pwa")
+        self.write_pwa_assets(pwa_dir)
+        os.chdir(pwa_dir)
+
+        def serve():
+            handler = http.server.SimpleHTTPRequestHandler
+
+            class ReusableTCPServer(socketserver.TCPServer):
+                allow_reuse_address = True
+
+            try:
+                with ReusableTCPServer(("127.0.0.1", port), handler) as httpd:
+                    httpd.serve_forever()
+            except OSError as e:
+                _log(f"PWA server error: {e}", "ERROR")
+
+        threading.Thread(target=serve, daemon=True).start()
+
+        # Mark server as running before opening browser
+        self.pwa_server_running = True
+
+        # Small delay to ensure server is bound before opening browser
+        time.sleep(0.4)
+
+        webbrowser.open(f"http://127.0.0.1:{port}/index.html")
+
+        console.print(
+            "[green]Darkelf PWA Viewer launched (offline, local-only).[/green]"
+        )
 
     def run(self):
         while self.running:
@@ -687,6 +1140,10 @@ class DarkelfCLI:
                 self.cmd_vault()
             elif choice == "6":
                 self.cmd_help()
+            elif choice == "7":
+                self.cmd_scribe()
+            elif choice == "8":
+                self._launch_pwa_viewer()
             elif choice == "q":
                 if Confirm.ask("Exit Darkelf CLI?"):
                     self.running = False
@@ -724,3 +1181,4 @@ def main():
 
 if __name__ == "__main__":
     main() 
+
