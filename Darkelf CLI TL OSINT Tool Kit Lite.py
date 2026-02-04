@@ -1,4 +1,4 @@
-# Darkelf CLI TL OSINT Tool Kit v3.0 – Secure, Privacy-Focused Command-Line Web Browser
+# Darkelf CLI TL OSINT Tool Kit Lite v3.0 – Secure, Privacy-Focused Command-Line Web Browser
 # Copyright (C) 2025 Dr. Kevin Moore
 #
 # SPDX-License-Identifier: LGPL-3.0-or-later
