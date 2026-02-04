@@ -1205,6 +1205,18 @@ def parse_args():
     p.add_argument("--quiet", action="store_true", help="Minimal console output")
     return p.parse_args()
 
+def cmd_help(self):
+    console.print(
+        "[bold green]Darkelf CLI Help[/bold green]\n\n"
+        "[cyan]scan[/cyan]       — Quick OSINT scan (email, username, phone, domain)\n"
+        "[cyan]dork[/cyan]       — Run DuckDuckGo dorks via Tor\n"
+        "[cyan]indicators[/cyan] — View/export extracted indicators\n"
+        "[cyan]fetch[/cyan]      — Fetch and preview a URL safely\n"
+        "[cyan]vault[/cyan]      — Kyber vault operations\n"
+        "[cyan]scribe[/cyan]     — Draft TraceLabs/CTF report (local AI)\n"
+        "[cyan]viewer[/cyan]     — Open Darkelf Scribe Viewer\n"
+        "[cyan]quit[/cyan]       — Exit Darkelf\n"
+    )
 
 def main():
     args = parse_args()
