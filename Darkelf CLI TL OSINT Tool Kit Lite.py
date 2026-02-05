@@ -859,17 +859,22 @@ class DarkelfCLI:
                 console.print(f"[red]Decrypt failed: {e}[/red]")
                 
     def cmd_scribe(self):
+
         console.print(Rule("Darkelf Scribe 📝"))
 
         console.print(
             "[dim]Local AI drafting via Ollama. Uses only your notes and extracted indicators. "
-            "No data leaves your system.[/dim]"
+            "No data leaves your system.[/dim]\n"
+            "[dim]Paste investigator notes below. Finish with Enter then CTRL+D (Linux/macOS) or "
+            "CTRL+Z then Enter (Windows).[/dim]\n"
         )
 
-        notes = Prompt.ask(
-            "Paste investigator notes or working summary",
-            show_default=False
-        ).strip()
+        # --- Multiline-safe input ---
+        try:
+            notes = sys.stdin.read().strip()
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Input cancelled.[/yellow]")
+            return
 
         if not notes:
             console.print("[yellow]No notes provided. Aborting.[/yellow]")
@@ -879,6 +884,7 @@ class DarkelfCLI:
         redacted = self._scribe_redact_preview(notes)
         console.print(Panel(redacted, title="Redaction Preview"))
 
+        # --- Single confirmation AFTER input ---
         if not Confirm.ask("Proceed with these notes?", default=True):
             console.print("[yellow]Cancelled by user.[/yellow]")
             return
@@ -903,7 +909,6 @@ class DarkelfCLI:
             }
         )
 
-        # Queue or blocking execution
         use_queue = Confirm.ask(
             "Run AI in background (non-blocking)?",
             default=False
@@ -942,7 +947,7 @@ class DarkelfCLI:
     def _scribe_export(self, text: str):
         export_format = Prompt.ask(
             "Export format",
-            choices=["json", "md", "pdf"],
+            choices=["json", "md"],
             default="json"
         )
 
@@ -973,17 +978,6 @@ class DarkelfCLI:
             with open(full_path, "w", encoding="utf-8") as f:
                 f.write(text)
 
-            self._launch_pwa_viewer(str(full_path))
-
-        else:  # pdf
-            filename = f"darkelf_scribe_{timestamp}.pdf"
-            full_path = output_path(filename)
-            md_tmp = output_path(f"{timestamp}.md")
-
-            with open(md_tmp, "w", encoding="utf-8") as f:
-                f.write(text)
-    
-            os.system(f"pandoc {md_tmp} -o {full_path}")
             self._launch_pwa_viewer(str(full_path))
 
         console.print(f"[green]Saved to {full_path}[/green]")
