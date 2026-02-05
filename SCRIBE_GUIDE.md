@@ -164,18 +164,14 @@ darkelf.scribe.v1
 > PDF export is **not supported** in the current version.
 
 ---
+## 📂 Output locations (corrected)
 
-## Output locations
+All Darkelf Scribe exports are saved inside your **Documents** folder, under a dedicated **Darkelf** directory.
 
-All Scribe exports are saved locally via `output_path()`.
+**Windows:** `C:\Users\<username>\Documents\Darkelf\`  
+**macOS / Linux:** `~/Documents/Darkelf/`
 
-Typical directory layout:
-```
-darkelf/
-└── outputs/
-    ├── darkelf_scribe_YYYYMMDD_HHMMSS.json
-    └── darkelf_scribe_YYYYMMDD_HHMMSS.md
-```
+Darkelf creates this directory automatically if it does not exist.
 
 After saving, Darkelf automatically opens the **local Scribe viewer**.
 
