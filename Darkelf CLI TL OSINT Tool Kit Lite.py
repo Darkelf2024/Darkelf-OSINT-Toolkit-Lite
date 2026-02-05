@@ -145,6 +145,13 @@ from typing import Any
 from stem.control import Controller
 from stem.process import launch_tor_with_config
 from stem import Signal
+from pathlib import Path
+
+OUTPUT_DIR = Path.home() / "Documents" / "Darkelf"
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+def output_path(filename: str) -> Path:
+    return OUTPUT_DIR / filename
 
 TOR_PORT = 9052  # detected from tor startup
 PROXY = f"socks5h://127.0.0.1:{TOR_PORT}"
@@ -943,6 +950,8 @@ class DarkelfCLI:
 
         if export_format == "json":
             filename = f"darkelf_scribe_{timestamp}.json"
+            full_path = output_path(filename)
+
             payload = {
                 "schema": "darkelf.scribe.v1",
                 "generated_at": datetime.utcnow().isoformat(),
@@ -952,29 +961,32 @@ class DarkelfCLI:
                 "raw_output": text
             }
 
-            with open(filename, "w", encoding="utf-8") as f:
+            with open(full_path, "w", encoding="utf-8") as f:
                 json.dump(payload, f, indent=2)
 
-            self._launch_pwa_viewer(filename)
+            self._launch_pwa_viewer(str(full_path))
 
         elif export_format == "md":
             filename = f"darkelf_scribe_{timestamp}.md"
-            with open(filename, "w", encoding="utf-8") as f:
+            full_path = output_path(filename)
+
+            with open(full_path, "w", encoding="utf-8") as f:
                 f.write(text)
 
-            self._launch_pwa_viewer(filename)
+            self._launch_pwa_viewer(str(full_path))
 
         else:  # pdf
             filename = f"darkelf_scribe_{timestamp}.pdf"
-            md_tmp = f"/tmp/{timestamp}.md"
+            full_path = output_path(filename)
+            md_tmp = output_path(f"{timestamp}.md")
 
             with open(md_tmp, "w", encoding="utf-8") as f:
                 f.write(text)
+    
+            os.system(f"pandoc {md_tmp} -o {full_path}")
+            self._launch_pwa_viewer(str(full_path))
 
-            os.system(f"pandoc {md_tmp} -o {filename}")
-            self._launch_pwa_viewer(filename)
-
-        console.print(f"[green]Saved to {filename}[/green]")
+        console.print(f"[green]Saved to {full_path}[/green]")
         
     def _extract_section(self, text: str, header: str) -> str:
         match = re.search(rf"{header}:\n(.*?)(\n[A-Z][a-z]+:|\Z)", text, re.S)
