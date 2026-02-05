@@ -201,6 +201,6 @@ darkelf/
 ## Mental model
 
 **Scribe drafts reports.  
-Exports go to `outputs/`.  
+Exports go to `Darkelf/`.  
 Kyber Vault is encrypted storage.  
 Everything stays local.**
