@@ -174,6 +174,8 @@ Programmatic notes:
 
 ---
 
+Note: [Scribe Guide](https://github.com/Darkelf2024/Darkelf-OSINT-Toolkit-Lite/blob/main/SCRIBE_GUIDE.md)
+
 ## Security & Legal
 
 - Use this toolkit only for lawful, authorized OSINT and research tasks.
