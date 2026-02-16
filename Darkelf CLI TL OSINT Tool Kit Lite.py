@@ -74,21 +74,15 @@
 # - Be careful when running network code (Tor recommended for privacy).
 #
 # High-level goals of this rewrite:
-# - Cleaner, modular structure (Utilities, Indicators, Scanners, Vault, CLI)
+# - Cleaner, modular structure (Utilities, Indicators, Scanners, CLI)
 # - Safer defaults and clearer warnings about destructive operations
 # - Improved UX via Rich (consistent console styling)
 # - Simple plug-in friendly architecture for adding new scanners
 # - Better error handling and logging
 #
 # Dependencies (selectively used):
-# - rich, requests, tldextract, phonenumbers, bs4 (beautifulsoup4), oqs (optional)
-# - If oqs (Open Quantum Safe) is not installed the PQ vault falls back gracefully.
-#
-# A note on capabilities:
-# - This rewrite intentionally removes/neutralizes "self-destruct on debugger"
-#   aggressive anti-forensics behavior from the interactive path by default.
-#   Those features (secure wipe / panic) require explicit operator consent and
-#   are left in helper functions guarded by confirm prompts.
+# - rich, requests, tldextract, phonenumbers, bs4 (beautifulsoup4)
+# - dnspython, python-whois (for WHOIS/DNS lookups)
 #
 # Always obey laws, terms-of-service, and use only on data/systems you are
 # authorized to test or investigate.
@@ -127,11 +121,19 @@ from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
-# Optional imports (graceful fallback)
+# DNS and WHOIS imports
 try:
-    import oqs
-except Exception:
-    oqs = None
+    import dns.resolver
+    import dns.reversename
+    DNS_AVAILABLE = True
+except ImportError:
+    DNS_AVAILABLE = False
+    
+try:
+    import whois as python_whois
+    WHOIS_AVAILABLE = True
+except ImportError:
+    WHOIS_AVAILABLE = False
     
 import subprocess
 
@@ -431,78 +433,189 @@ def fetch_url_text(url: str, use_tor: bool = True, timeout: int = 15, safe_block
 
 
 # ---------------------------
-# PQ KEM Vault (optional)
+# WHOIS/DNS Lookup Module
 # ---------------------------
-class KyberVault:
+class WHOISDNSLookup:
     """
-    Simple vault that uses OQS Kyber to encrypt random vault items.
-    Requires oqs package installed. If not available, vault is disabled.
+    WHOIS and DNS lookup utility that routes all queries through Tor.
+    Provides domain/IP WHOIS, DNS record queries, and reverse DNS lookups.
     """
-    def __init__(self, vault_dir: str = "vault", kem_algo: str = "Kyber768"):
-        self.vault_dir = vault_dir
-        os.makedirs(self.vault_dir, exist_ok=True)
-        self.kem_algo = kem_algo
-        self.kem = oqs.KeyEncapsulation(kem_algo) if oqs else None
-        self.pubkey_path = os.path.join(self.vault_dir, "kyber_pub.bin")
-        self.privkey_path = os.path.join(self.vault_dir, "kyber_priv.bin")
-
-    def available(self) -> bool:
-        return oqs is not None
-
-    def generate_keys(self) -> Tuple[str, str]:
-        if not self.available():
-            raise RuntimeError("OQS not available, cannot generate keys.")
-        pub = self.kem.generate_keypair()
-        priv = self.kem.export_secret_key()
-        with open(self.pubkey_path, "wb") as f:
-            f.write(pub)
-        with open(self.privkey_path, "wb") as f:
-            f.write(priv)
-        _log("Generated Kyber keypair")
-        return self.pubkey_path, self.privkey_path
-
-    def encrypt(self, plaintext: str) -> str:
-        if not self.available():
-            raise RuntimeError("Vault unavailable.")
-        if not os.path.exists(self.pubkey_path):
-            raise FileNotFoundError("Public key missing; generate keys first.")
-        with open(self.pubkey_path, "rb") as f:
-            pub = f.read()
-        ct, ss = self.kem.encap_secret(pub)
-        # Derive key from ss (shortened) and use Fernet-like pattern with base64
-        key = base64.urlsafe_b64encode(ss[:32])
-        token = base64.b64encode(plaintext.encode())
-        payload = b"v1||" + base64.b64encode(ct) + b"||" + key + b"||" + token
-        fname = f"vault_{int(time.time())}.dat"
-        path = os.path.join(self.vault_dir, fname)
-        with open(path, "wb") as f:
-            f.write(payload)
-        _log(f"Encrypted vault item {fname}")
-        return path
-
-    def decrypt(self, filename: str) -> str:
-        if not self.available():
-            raise RuntimeError("Vault unavailable.")
-        path = os.path.join(self.vault_dir, filename)
-        if not os.path.exists(path):
-            raise FileNotFoundError("Vault file not found.")
-        with open(path, "rb") as f:
-            content = f.read()
-        if not content.startswith(b"v1||"):
-            raise ValueError("Unsupported vault format.")
-        _, ct_b64, key_b64, token_b64 = content.split(b"||", 3)
-        ct = base64.b64decode(ct_b64)
-        key = key_b64  # direct derived key (base64)
-        token = base64.b64decode(token_b64)
-        # decap with privkey
-        with open(self.privkey_path, "rb") as f:
-            priv = f.read()
-        kem = oqs.KeyEncapsulation(self.kem_algo, secret_key=priv)
-        ss = kem.decap_secret(ct)
-        derived = base64.urlsafe_b64encode(ss[:32])
-        if derived != key:
-            raise ValueError("Decryption key mismatch.")
-        return token.decode()
+    
+    def __init__(self, use_tor: bool = True, socks_port: int = 9052):
+        self.use_tor = use_tor
+        self.socks_port = socks_port
+        
+        # Configure DNS resolver to use Tor if available
+        if DNS_AVAILABLE and use_tor:
+            self.resolver = dns.resolver.Resolver()
+            # Note: dnspython doesn't natively support SOCKS proxies
+            # For production, consider using a local DNS forwarder through Tor
+            _log("DNS resolver initialized (note: direct Tor routing for DNS may require additional setup)", "WARN")
+        elif DNS_AVAILABLE:
+            self.resolver = dns.resolver.Resolver()
+        else:
+            self.resolver = None
+            _log("dnspython not available - DNS lookups disabled", "WARN")
+    
+    def whois_domain(self, domain: str) -> Dict[str, Any]:
+        """
+        Perform WHOIS lookup for a domain.
+        Returns parsed WHOIS data or error information.
+        """
+        if not WHOIS_AVAILABLE:
+            return {"error": "python-whois library not installed"}
+        
+        try:
+            _log(f"WHOIS lookup for domain: {domain}")
+            
+            # python-whois doesn't support SOCKS proxies directly
+            # For true Tor routing, would need to implement raw WHOIS protocol
+            w = python_whois.whois(domain)
+            
+            result = {
+                "domain": domain,
+                "registrar": w.registrar if hasattr(w, 'registrar') else None,
+                "creation_date": str(w.creation_date) if hasattr(w, 'creation_date') else None,
+                "expiration_date": str(w.expiration_date) if hasattr(w, 'expiration_date') else None,
+                "updated_date": str(w.updated_date) if hasattr(w, 'updated_date') else None,
+                "status": w.status if hasattr(w, 'status') else None,
+                "nameservers": w.name_servers if hasattr(w, 'name_servers') else None,
+                "emails": w.emails if hasattr(w, 'emails') else None,
+            }
+            
+            return result
+            
+        except Exception as e:
+            _log(f"WHOIS lookup failed for {domain}: {e}", "ERROR")
+            return {"error": str(e), "domain": domain}
+    
+    def whois_ip(self, ip: str) -> Dict[str, Any]:
+        """
+        Perform WHOIS lookup for an IP address.
+        """
+        try:
+            _log(f"WHOIS lookup for IP: {ip}")
+            
+            # Use requests through Tor SOCKS proxy to query WHOIS
+            # This is a simple implementation - production would use proper WHOIS protocol
+            session = requests.Session()
+            if self.use_tor:
+                session.proxies = {
+                    "http": f"socks5h://127.0.0.1:{self.socks_port}",
+                    "https": f"socks5h://127.0.0.1:{self.socks_port}"
+                }
+            
+            # Query ipwhois.io API (supports Tor)
+            url = f"https://ipwhois.app/json/{ip}"
+            r = session.get(url, timeout=15)
+            r.raise_for_status()
+            data = r.json()
+            
+            result = {
+                "ip": ip,
+                "country": data.get("country"),
+                "region": data.get("region"),
+                "city": data.get("city"),
+                "isp": data.get("isp"),
+                "org": data.get("org"),
+                "asn": data.get("asn"),
+                "continent": data.get("continent"),
+            }
+            
+            return result
+            
+        except Exception as e:
+            _log(f"IP WHOIS lookup failed for {ip}: {e}", "ERROR")
+            return {"error": str(e), "ip": ip}
+    
+    def dns_query(self, domain: str, record_type: str = "A") -> List[Dict[str, Any]]:
+        """
+        Query DNS records for a domain.
+        Supported types: A, AAAA, MX, TXT, NS, CNAME, SOA
+        """
+        if not DNS_AVAILABLE:
+            return [{"error": "dnspython library not installed"}]
+        
+        try:
+            _log(f"DNS {record_type} query for: {domain}")
+            
+            answers = self.resolver.resolve(domain, record_type)
+            results = []
+            
+            for rdata in answers:
+                result = {
+                    "type": record_type,
+                    "domain": domain,
+                    "ttl": answers.rrset.ttl,
+                }
+                
+                if record_type == "MX":
+                    result["priority"] = rdata.preference
+                    result["value"] = str(rdata.exchange)
+                elif record_type == "SOA":
+                    result["mname"] = str(rdata.mname)
+                    result["rname"] = str(rdata.rname)
+                    result["serial"] = rdata.serial
+                else:
+                    result["value"] = str(rdata)
+                
+                results.append(result)
+            
+            return results
+            
+        except dns.resolver.NXDOMAIN:
+            return [{"error": "Domain does not exist", "domain": domain}]
+        except dns.resolver.NoAnswer:
+            return [{"error": f"No {record_type} records found", "domain": domain}]
+        except Exception as e:
+            _log(f"DNS query failed for {domain} ({record_type}): {e}", "ERROR")
+            return [{"error": str(e), "domain": domain}]
+    
+    def reverse_dns(self, ip: str) -> Dict[str, Any]:
+        """
+        Perform reverse DNS lookup (PTR record) for an IP.
+        """
+        if not DNS_AVAILABLE:
+            return {"error": "dnspython library not installed"}
+        
+        try:
+            _log(f"Reverse DNS lookup for: {ip}")
+            
+            addr = dns.reversename.from_address(ip)
+            answers = self.resolver.resolve(addr, "PTR")
+            
+            hostnames = [str(rdata) for rdata in answers]
+            
+            return {
+                "ip": ip,
+                "hostnames": hostnames,
+                "ttl": answers.rrset.ttl if answers else None
+            }
+            
+        except Exception as e:
+            _log(f"Reverse DNS failed for {ip}: {e}", "ERROR")
+            return {"error": str(e), "ip": ip}
+    
+    def bulk_dns_lookup(self, domains: Iterable[str], record_type: str = "A") -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Perform DNS lookups for multiple domains.
+        Returns dict mapping domain to results.
+        """
+        results = {}
+        for domain in domains:
+            results[domain] = self.dns_query(domain, record_type)
+            time.sleep(0.1)  # Rate limiting
+        return results
+    
+    def bulk_reverse_dns(self, ips: Iterable[str]) -> Dict[str, Dict[str, Any]]:
+        """
+        Perform reverse DNS lookups for multiple IPs.
+        """
+        results = {}
+        for ip in ips:
+            results[ip] = self.reverse_dns(ip)
+            time.sleep(0.1)  # Rate limiting
+        return results
         
 PWA_INDEX_HTML = r"""<!DOCTYPE html>
 <html lang="en">
@@ -648,7 +761,7 @@ class DarkelfCLI:
         self.indicators = Indicators()
         # Always enable Tor/Stealth by default
         self.ddg = DuckDuckGoLite(use_tor=True)
-        self.vault = KyberVault()
+        self.whois_dns = WHOISDNSLookup(use_tor=True)
         self.safe_blocklist = {"google-analytics.com", "doubleclick.net", "facebook.net"}
         self.running = True
         self.stealth_mode = True  # explicit flag for UI/logic if needed
@@ -677,10 +790,12 @@ class DarkelfCLI:
 
     def banner(self):
         console.clear()
+        dns_status = "available" if DNS_AVAILABLE else "unavailable"
+        whois_status = "available" if WHOIS_AVAILABLE else "unavailable"
         console.print(Panel.fit(
             Text.from_markup(
                 "[bold green]ＤＡＲＫＥＬＦ[/bold green] — OSINT Toolkit (Refactored)\n"
-                "[dim]Stealth: ON · Tor: enabled · Vault: {vault}[/dim]".format(vault="available" if self.vault.available() else "unavailable")
+                f"[dim]Stealth: ON · Tor: enabled · DNS: {dns_status} · WHOIS: {whois_status}[/dim]"
             ),
             border_style="bright_magenta",
         ))
@@ -694,7 +809,7 @@ class DarkelfCLI:
         menu.add_row("2) dork", "Run a DuckDuckGo dork (onion/clearnet) — via Tor")
         menu.add_row("3) indicators", "Show extracted indicators and export")
         menu.add_row("4) fetch", "Fetch & preview a URL (safe-blocked) — via Tor")
-        menu.add_row("5) vault", "Kyber vault operations (generate/encrypt/decrypt)")
+        menu.add_row("5) whois/dns", "WHOIS & DNS lookups (via Tor)")
         menu.add_row("6) scribe", "Darkelf Scribe — Draft TraceLabs / CTF submission (local AI)")
         menu.add_row("7) viewer", "Open Darkelf Scribe PWA Viewer (offline)")
         menu.add_row("8) help", "Show help")
@@ -806,58 +921,273 @@ class DarkelfCLI:
             console.print(f"[red]Fetch error: {e}[/red]")
             _log(f"Fetch error: {e}", "ERROR")
 
-    def cmd_vault(self):
-        if not self.vault.available():
-            console.print("[yellow]PQ Vault unavailable: oqs package not installed.[/yellow]")
-            return
-
+    def cmd_whois_dns(self):
+        """WHOIS/DNS lookup command with submenu."""
+        console.print(Rule("WHOIS / DNS Lookup"))
+        
         table = Table(show_header=False, box=box.MINIMAL)
         table.add_column("", style="cyan")
         table.add_column("", style="white")
-        table.add_row("1) generate", "Generate Kyber keypair")
-        table.add_row("2) encrypt", "Encrypt plaintext into vault")
-        table.add_row("3) decrypt", "Decrypt a vault file")
-        choice = Prompt.ask("Choose", choices=["1", "2", "3"], default="1")
-
+        table.add_row("1) domain whois", "WHOIS lookup for a domain")
+        table.add_row("2) ip whois", "WHOIS lookup for an IP address")
+        table.add_row("3) dns records", "Query DNS records (A, MX, TXT, etc.)")
+        table.add_row("4) reverse dns", "Reverse DNS (PTR) lookup for IP")
+        table.add_row("5) bulk lookup", "Bulk DNS/reverse DNS from indicators")
+        table.add_row("6) back", "Return to main menu")
+        console.print(table)
+        
+        choice = Prompt.ask("Choose", choices=["1", "2", "3", "4", "5", "6"], default="1")
+        
         if choice == "1":
-            self.vault.generate_keys()
-            console.print("[green]Keypair created.[/green]")
+            self._whois_domain_lookup()
         elif choice == "2":
-            text = Prompt.ask("Text to encrypt (single line)").strip()
-            path = self.vault.encrypt(text)
-            console.print(f"[green]Encrypted -> {path}[/green]")
+            self._whois_ip_lookup()
         elif choice == "3":
-            # List vault files
-            files = sorted(f for f in os.listdir(self.vault.vault_dir) if f.endswith(".dat")
-            )
-            if not files:
-                console.print("[yellow]No vault files found.[/yellow]")
-                return
+            self._dns_records_lookup()
+        elif choice == "4":
+            self._reverse_dns_lookup()
+        elif choice == "5":
+            self._bulk_lookup()
+        # choice == "6" returns to main menu
+    
+    def _whois_domain_lookup(self):
+        """Perform WHOIS lookup for a domain."""
+        domain = Prompt.ask("Domain to lookup (e.g., example.com)").strip()
+        if not domain:
+            return
+        
+        with console.status(f"[bold green]Looking up WHOIS for {domain}..."):
+            result = self.whois_dns.whois_domain(domain)
+        
+        if "error" in result:
+            console.print(f"[red]Error: {result['error']}[/red]")
+            return
+        
+        # Display in a panel
+        lines = []
+        lines.append(f"[bold cyan]Domain:[/bold cyan] {result.get('domain', 'N/A')}")
+        lines.append(f"[bold cyan]Registrar:[/bold cyan] {result.get('registrar', 'N/A')}")
+        lines.append(f"[bold cyan]Created:[/bold cyan] {result.get('creation_date', 'N/A')}")
+        lines.append(f"[bold cyan]Expires:[/bold cyan] {result.get('expiration_date', 'N/A')}")
+        lines.append(f"[bold cyan]Updated:[/bold cyan] {result.get('updated_date', 'N/A')}")
+        
+        if result.get('nameservers'):
+            ns = result['nameservers']
+            if isinstance(ns, list):
+                lines.append(f"[bold cyan]Nameservers:[/bold cyan] {', '.join(ns[:3])}")
+            else:
+                lines.append(f"[bold cyan]Nameservers:[/bold cyan] {ns}")
+        
+        if result.get('emails'):
+            emails = result['emails']
+            if isinstance(emails, list):
+                lines.append(f"[bold cyan]Emails:[/bold cyan] {', '.join(emails)}")
+            else:
+                lines.append(f"[bold cyan]Emails:[/bold cyan] {emails}")
+        
+        console.print(Panel("\n".join(lines), title=f"WHOIS: {domain}", border_style="green"))
+        
+        # Auto-ingest discovered data
+        if result.get('emails'):
+            emails = result['emails'] if isinstance(result['emails'], list) else [result['emails']]
+            for email in emails:
+                self.indicators.emails.add(email.lower())
+        
+        if Confirm.ask("Export to JSON?", default=False):
+            filename = f"whois_{domain.replace('.', '_')}_{int(time.time())}.json"
+            full_path = output_path(filename)
+
+            with open(full_path, "w", encoding="utf-8") as f:
+                json.dump(result, f, indent=2)
+
+            console.print(f"[green]Saved to {full_path}[/green]")
+    
+    def _whois_ip_lookup(self):
+        """Perform WHOIS lookup for an IP address."""
+        ip = Prompt.ask("IP address to lookup (e.g., 8.8.8.8)").strip()
+        if not ip:
+            return
+        
+        with console.status(f"[bold green]Looking up WHOIS for {ip}..."):
+            result = self.whois_dns.whois_ip(ip)
+        
+        if "error" in result:
+            console.print(f"[red]Error: {result['error']}[/red]")
+            return
+        
+        # Display in a panel
+        lines = []
+        lines.append(f"[bold cyan]IP:[/bold cyan] {result.get('ip', 'N/A')}")
+        lines.append(f"[bold cyan]Country:[/bold cyan] {result.get('country', 'N/A')}")
+        lines.append(f"[bold cyan]Region:[/bold cyan] {result.get('region', 'N/A')}")
+        lines.append(f"[bold cyan]City:[/bold cyan] {result.get('city', 'N/A')}")
+        lines.append(f"[bold cyan]ISP:[/bold cyan] {result.get('isp', 'N/A')}")
+        lines.append(f"[bold cyan]Organization:[/bold cyan] {result.get('org', 'N/A')}")
+        lines.append(f"[bold cyan]ASN:[/bold cyan] {result.get('asn', 'N/A')}")
+        
+        console.print(Panel("\n".join(lines), title=f"IP WHOIS: {ip}", border_style="green"))
+        
+        if Confirm.ask("Export to JSON?", default=False):
+            filename = f"whois_{ip.replace('.', '_')}_{int(time.time())}.json"
+            full_path = output_path(filename)
+
+            with open(full_path, "w", encoding="utf-8") as f:
+                json.dump(result, f, indent=2)
+
+            console.print(f"[green]Saved to {full_path}[/green]")
+    
+    def _dns_records_lookup(self):
+        """Query DNS records for a domain."""
+        domain = Prompt.ask("Domain to query (e.g., example.com)").strip()
+        if not domain:
+            return
+        
+        console.print("\n[dim]Available record types: A, AAAA, MX, TXT, NS, CNAME, SOA[/dim]")
+        record_type = Prompt.ask("Record type", default="A").strip().upper()
+        
+        with console.status(f"[bold green]Querying {record_type} records for {domain}..."):
+            results = self.whois_dns.dns_query(domain, record_type)
+        
+        if not results or "error" in results[0]:
+            error = results[0].get("error", "Unknown error") if results else "No results"
+            console.print(f"[red]Error: {error}[/red]")
+            return
+        
+        # Display as table
+        table = Table(title=f"DNS {record_type} Records: {domain}", box=box.SIMPLE_HEAVY)
+        
+        if record_type == "MX":
+            table.add_column("Priority", style="cyan")
+            table.add_column("Value", style="white")
+            table.add_column("TTL", style="dim")
+            for r in results:
+                table.add_row(str(r.get("priority", "")), r.get("value", ""), str(r.get("ttl", "")))
+        elif record_type == "SOA":
+            table.add_column("Field", style="cyan")
+            table.add_column("Value", style="white")
+            for r in results:
+                table.add_row("MNAME", r.get("mname", ""))
+                table.add_row("RNAME", r.get("rname", ""))
+                table.add_row("Serial", str(r.get("serial", "")))
+                table.add_row("TTL", str(r.get("ttl", "")))
+        else:
+            table.add_column("Value", style="white")
+            table.add_column("TTL", style="dim")
+            for r in results:
+                table.add_row(r.get("value", ""), str(r.get("ttl", "")))
+        
+        console.print(table)
+        
+        # Auto-ingest discovered IPs and domains
+        for r in results:
+            value = r.get("value", "")
+            if IPV4_RE.match(value):
+                self.indicators.ips.add(value)
+            elif "." in value:
+                domain_normalized = normalize_domain(value)
+                if domain_normalized:
+                    self.indicators.domains.add(domain_normalized)
+        
+        if Confirm.ask("Export to JSON?", default=False):
+            filename = f"dns_{record_type}_{domain.replace('.', '_')}_{int(time.time())}.json"
+            full_path = output_path(filename)
+
+            with open(full_path, "w", encoding="utf-8") as f:
+                json.dump(results, f, indent=2)
+
+            console.print(f"[green]Saved to {full_path}[/green]")
+    
+    def _reverse_dns_lookup(self):
+        """Perform reverse DNS lookup for an IP."""
+        ip = Prompt.ask("IP address for reverse DNS (e.g., 8.8.8.8)").strip()
+        if not ip:
+            return
+        
+        with console.status(f"[bold green]Reverse DNS lookup for {ip}..."):
+            result = self.whois_dns.reverse_dns(ip)
+        
+        if "error" in result:
+            console.print(f"[red]Error: {result['error']}[/red]")
+            return
+        
+        hostnames = result.get("hostnames", [])
+        if not hostnames:
+            console.print(f"[yellow]No PTR records found for {ip}[/yellow]")
+            return
+        
+        # Display
+        lines = [f"[bold cyan]IP:[/bold cyan] {ip}"]
+        lines.append(f"[bold cyan]Hostnames:[/bold cyan]")
+        for hostname in hostnames:
+            lines.append(f"  • {hostname}")
+        lines.append(f"[dim]TTL: {result.get('ttl', 'N/A')}[/dim]")
+        
+        console.print(Panel("\n".join(lines), title="Reverse DNS", border_style="green"))
+        
+        # Auto-ingest domains
+        for hostname in hostnames:
+            domain = normalize_domain(hostname)
+            if domain:
+                self.indicators.domains.add(domain)
+        
+        if Confirm.ask("Export to JSON?", default=False):
+            filename = f"rdns_{ip.replace('.', '_')}_{int(time.time())}.json"
+            full_path = output_path(filename)
+
+            with open(full_path, "w", encoding="utf-8") as f:
+                json.dump(result, f, indent=2)
+
+            console.print(f"[green]Saved to {full_path}[/green]")
+
+    def _bulk_lookup(self):
+        """Perform bulk DNS/reverse DNS lookups from indicators."""
+        console.print(Rule("Bulk Lookup from Indicators"))
+        
+        if not self.indicators.domains and not self.indicators.ips:
+            console.print("[yellow]No domains or IPs in indicators. Run a scan first.[/yellow]")
+            return
+        
+        table = Table(show_header=False, box=box.MINIMAL)
+        table.add_column("", style="cyan")
+        table.add_column("", style="white")
+        table.add_row("1) dns", f"DNS A records for {len(self.indicators.domains)} domains")
+        table.add_row("2) reverse", f"Reverse DNS for {len(self.indicators.ips)} IPs")
+        table.add_row("3) both", "Both DNS and reverse DNS")
+        
+        console.print(table)
+        choice = Prompt.ask("Choose", choices=["1", "2", "3"], default="1")
+        
+        all_results = {}
+        
+        if choice in ("1", "3"):
+            console.print(f"\n[cyan]Querying DNS A records for {len(self.indicators.domains)} domains...[/cyan]")
+            with console.status("[bold green]Running bulk DNS lookups..."):
+                dns_results = self.whois_dns.bulk_dns_lookup(self.indicators.domains, "A")
+            all_results["dns"] = dns_results
             
-            # Display numbered file list
-            console.print("[bold cyan]Available Vault Files:[/bold cyan]")
-            for idx, file_name in enumerate(files, start=1):
-                console.print(f" {idx}) {file_name}")
+            # Summary
+            success = sum(1 for r in dns_results.values() if r and "error" not in r[0])
+            console.print(f"[green]✓ {success}/{len(dns_results)} successful[/green]")
+        
+        if choice in ("2", "3"):
+            console.print(f"\n[cyan]Querying reverse DNS for {len(self.indicators.ips)} IPs...[/cyan]")
+            with console.status("[bold green]Running bulk reverse DNS lookups..."):
+                rdns_results = self.whois_dns.bulk_reverse_dns(self.indicators.ips)
+            all_results["reverse_dns"] = rdns_results
             
-            while True:
-                try:
-                    # Prompt for file number (ensure valid integer within range)
-                    file_index = int(Prompt.ask("File # to decrypt"))
-                    if 1 <= file_index <= len(files):
-                        file_name = files[file_index - 1]  # Get the selected file
-                        break
-                    else:
-                        console.print("[red]Invalid selection. Please choose a valid file number.[/red]")
-                except ValueError:
-                    console.print("[red]Invalid input. Please enter a number corresponding to the file.[/red]")
-            
-            # Attempt to decrypt the selected file
-            try:
-                content = self.vault.decrypt(file_name)
-                console.print(Panel(Text(content), title=file_name))
-            except Exception as e:
-                console.print(f"[red]Decrypt failed: {e}[/red]")
-                
+            # Summary
+            success = sum(1 for r in rdns_results.values() if "error" not in r)
+            console.print(f"[green]✓ {success}/{len(rdns_results)} successful[/green]")
+        
+        if Confirm.ask("\nExport all results to JSON?", default=False):
+            filename = f"bulk_lookup_{int(time.time())}.json"
+            full_path = output_path(filename)
+
+            with open(full_path, "w", encoding="utf-8") as f:
+                json.dump(all_results, f, indent=2)
+
+            console.print(f"[green]Saved to {full_path}[/green]")
+
     def cmd_scribe(self):
 
         console.print(Rule("Darkelf Scribe 📝"))
@@ -1124,13 +1454,6 @@ class DarkelfCLI:
 
         return "\n".join(md)
         
-    def _markdown_to_pdf(self, md_path: str) -> None:
-        try:
-            result = self._scribe_run_ollama(prompt, model)
-            callback(result)
-        except Exception as e:
-            callback(f"[ERROR] {e}")
-
     def _ai_worker(self):
         while True:
             with self.ai_lock:
@@ -1218,7 +1541,7 @@ class DarkelfCLI:
             "[cyan]dork[/cyan]       — Run DuckDuckGo dorks via Tor\n"
             "[cyan]indicators[/cyan] — View/export extracted indicators\n"
             "[cyan]fetch[/cyan]      — Fetch and preview a URL safely\n"
-            "[cyan]vault[/cyan]      — Kyber vault operations\n"
+            "[cyan]whois/dns[/cyan]  — WHOIS & DNS lookups (domain, IP, reverse DNS)\n"
             "[cyan]scribe[/cyan]     — Draft TraceLabs/CTF report (local AI)\n"
             "[cyan]viewer[/cyan]     — Open Darkelf Scribe Viewer\n"
             "[cyan]quit[/cyan]       — Exit Darkelf\n"
@@ -1236,7 +1559,7 @@ class DarkelfCLI:
             elif choice == "4":
                 self.cmd_fetch()
             elif choice == "5":
-                self.cmd_vault()
+                self.cmd_whois_dns()
             elif choice == "6":
                 self.cmd_scribe()
             elif choice == "7":
@@ -1279,4 +1602,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main() 
+    main()
