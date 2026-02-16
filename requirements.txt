@@ -1,0 +1,9 @@
+rich
+requests
+tldextract
+beautifulsoup4
+phonenumbers
+dnspython
+python-whois
+stem
+psutil
