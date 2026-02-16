@@ -1,222 +1,263 @@
-# Darkelf Toolkit — Refactored (Lite)
+# Darkelf Toolkit --- Refactored (Lite)
 
-Darkelf Toolkit Refactored — Lite is a streamlined, terminal-first OSINT toolkit inspired by the original Darkelf project.  
-This refactor focuses on safer defaults, clear UX, modular components, enforced stealth via Tor, and an optional post‑quantum (Kyber) vault for protecting short secrets.
+Darkelf Toolkit Refactored --- Lite is a streamlined, terminal-first
+OSINT toolkit inspired by the original Darkelf project.\
+This refactor focuses on safer defaults, clear UX, modular components,
+enforced stealth via Tor, and structured export handling.
 
 This repository contains a compact CLI program (Python) that:
-- routes network traffic through Tor by default (stealth mode enabled),
-- provides quick OSINT primitives (search/dork, fetch, indicator extraction),
-- includes an optional Kyber-based vault (requires liboqs + python-oqs),
-- uses Rich for a nicer terminal UX.
 
-Important: This tool is for ethical OSINT / research only. Use it only on systems and data you are authorized to access. See the Security & Legal section below.
+-   routes network traffic through Tor by default (stealth mode
+    enabled),
+-   provides OSINT primitives (search/dork, fetch, indicator
+    extraction),
+-   includes WHOIS and DNS lookup capabilities,
+-   exports reports and lookup results to a dedicated Documents/Darkelf
+    folder,
+-   uses Rich for a clean terminal UX.
 
----
+Important: This tool is for ethical OSINT / research only. Use it only
+on systems and data you are authorized to access. See the Security &
+Legal section below.
+
+------------------------------------------------------------------------
 
 ## Quick TL;DR
 
 Install dependencies, start Tor on `127.0.0.1:9052`, then run:
 
-```bash
+``` bash
 python "Darkelf CLI TL OSINT Tool Kit Lite.py"
 ```
 
-The CLI enforces Tor routing and basic stealth by default. If you want the Kyber vault features, install liboqs and the Python binding (`oqs`).
+The CLI enforces Tor routing and basic stealth by default.
 
----
+------------------------------------------------------------------------
 
 ## Features
 
-- Enforced Tor routing for network requests (SOCKS5 `127.0.0.1:9052`)
-- DuckDuckGo onion & clearnet dork/search helper
-- Safe fetch (strips scripts/styles; tracks and blocks known trackers)
-- Indicator extraction (emails, domains, IPs, hashes, usernames, phones)
-- Kyber (post-quantum) vault: generate keypair, encrypt, decrypt (optional)
-- Human-friendly TUI with Rich (panels, tables, prompts)
-- Lightweight logging to `darkelf_activity.log`
+-   Enforced Tor routing for network requests (SOCKS5 `127.0.0.1:9052`)
+-   DuckDuckGo onion & clearnet dork/search helper
+-   Safe fetch (strips scripts/styles; blocks known trackers)
+-   Indicator extraction:
+    -   emails
+    -   domains
+    -   IPs
+    -   hashes
+    -   usernames
+    -   phone numbers
+-   WHOIS lookups:
+    -   domain WHOIS
+    -   IP WHOIS
+-   DNS lookups:
+    -   A, AAAA, MX, TXT, NS, CNAME, SOA
+    -   reverse DNS (PTR)
+    -   bulk DNS / reverse DNS from extracted indicators
+-   Structured exports:
+    -   WHOIS results
+    -   DNS results
+    -   Bulk lookup results
+    -   Indicator exports
+    -   Scribe reports
+-   Exports saved to:\
+    `~/Documents/Darkelf/`
+-   Lightweight logging to `darkelf_activity.log`
 
----
+------------------------------------------------------------------------
 
 ## Requirements
 
-- Python 3.9+
-- System tor (Tor daemon) — required for stealth/Tor routing
-- Recommended Python packages (install via pip):
+-   Python 3.9+
+-   System tor (Tor daemon) --- required for stealth/Tor routing
 
-```bash
+Install Python dependencies:
+
+``` bash
 pip install -r requirements.txt
 ```
 
-If you do not have a requirements file, these packages are required/used:
+If installing manually, required packages are:
 
-- rich
-- requests
-- beautifulsoup4
-- tldextract
-- phonenumbers
-- pysocks (for requests SOCKS support)
-- oqs (optional — required for Kyber vault)
-
-Install core deps:
-
-```bash
-pip install rich requests beautifulsoup4 tldextract phonenumbers pysocks
+``` bash
+pip install rich requests beautifulsoup4 tldextract phonenumbers dnspython python-whois stem psutil pysocks
 ```
 
-Vault (optional):
+Important: - Do NOT install the `whois` package. - Use `python-whois`.
 
-- liboqs — native library (see liboqs docs)
-- python-oqs binding (pip package `oqs`) — only if you want PQ vault support
-
----
+------------------------------------------------------------------------
 
 ## Tor: Install & Start
 
-Tor must be running and listening on a SOCKS port for the CLI to route traffic.
+Tor must be running and listening on a SOCKS port for the CLI to route
+traffic.
 
 Linux (Debian/Ubuntu):
 
-```bash
+``` bash
 sudo apt update
 sudo apt install tor
 sudo systemctl start tor
-# If you want to use port 9052 instead of default 9050 you can run tor manually:
+```
+
+If you want to use port 9052 instead of default 9050:
+
+``` bash
 tor --SocksPort 9052
 ```
 
 macOS (Homebrew):
 
-```bash
+``` bash
 brew install tor
 brew services start tor
-# or for manual run:
-tor --SocksPort 9052
 ```
 
 Windows:
 
-- Install Tor Expert Bundle or run Tor Browser and configure/proxy appropriately.
-- Ensure a SOCKS proxy is reachable at `127.0.0.1:9052` (update the script if your port differs).
+-   Install Tor Expert Bundle or run Tor Browser.
+-   Ensure a SOCKS proxy is reachable at `127.0.0.1:9052`.
+-   Update the script if your Tor port differs.
 
-Verify Tor (example):
+Verify Tor:
 
-```bash
+``` bash
 curl --socks5-hostname 127.0.0.1:9052 https://check.torproject.org/api/ip
 ```
 
-If this returns an IP and `anonymous` details, Tor is available.
+------------------------------------------------------------------------
 
----
+## Getting Started
 
-## Getting started
+1.  Ensure Tor is running.
+2.  Install Python dependencies.
+3.  Run the CLI:
 
-1. Ensure Tor is running (see above).
-2. Ensure Python dependencies are installed.
-3. Run the CLI:
-
-```bash
+``` bash
 python "Darkelf CLI TL OSINT Tool Kit copy.py"
 ```
 
-Note: the script enforces Tor (SOCKS proxy `127.0.0.1:9052`) and prints a banner showing Stealth: ON.
+The banner will display:
 
----
+    Stealth: ON · Tor: enabled · DNS: available · WHOIS: available
 
-## Typical workflow (examples)
+------------------------------------------------------------------------
 
-- Quick scan (email / username / phone / domain / url)
-  - Choose `scan` from the menu and enter the target.
-  - The CLI extracts indicators locally and runs a DuckDuckGo search (via Tor).
+## Typical Workflow
 
-- Dorking
-  - Choose `dork`, supply a query (e.g. `"joe@example.com" site:pastebin.com`), pick Onion Lite when prompted (default true).
-  - Optionally preview page content (fetched via Tor).
+### Scan
 
-- Fetch & preview
-  - Choose `fetch`, enter a URL — the CLI fetches content via Tor, strips scripts/styles, and shows a safe preview.
+-   Choose `scan`
+-   Enter an email, username, phone, domain, or URL
+-   The CLI extracts indicators and performs a Tor-routed search
 
-- Indicators
-  - Choose `indicators` to view counts and export extracted indicators to JSON.
+### Dork
 
----
+-   Choose `dork`
+-   Enter a raw search query
+-   Optionally use DuckDuckGo Onion Lite
+-   Preview content via Tor
 
-## Kyber Vault (optional)
+### Fetch
 
-The vault uses liboqs + python-oqs to perform a Kyber KEM encapsulation to store small plaintexts.
+-   Choose `fetch`
+-   Enter a URL
+-   The CLI safely fetches and strips scripts/styles
 
-Prereqs:
-- Install liboqs (follow liboqs build/install instructions).
-- Install Python binding:
+### Indicators
 
-```bash
-pip install oqs
-```
+-   Choose `indicators`
+-   View counts
+-   Export to JSON
 
-Vault usage (from CLI):
-1. Select `vault` from the menu.
-2. `generate` — creates `vault/kyber_pub.bin` and `vault/kyber_priv.bin`.
-3. `encrypt` — provide a line of plaintext and the program writes `vault/vault_<timestamp>.dat`.
-4. `decrypt` — pick a vault file to decrypt (requires the private key present).
+### WHOIS / DNS
 
-Programmatic notes:
-- Vault files are simple container format `v1||<ct_b64>||<key_b64>||<token_b64>`.
-- The private key file is stored under `vault/kyber_priv.bin`. Protect it appropriately (file permissions, encrypted storage, etc.).
+Choose `whois/dns`:
 
----
+-   Domain WHOIS
+-   IP WHOIS
+-   DNS record queries
+-   Reverse DNS
+-   Bulk lookups from extracted indicators
+
+All exports are saved automatically to:
+
+    ~/Documents/Darkelf/
+
+------------------------------------------------------------------------
+
+## Scribe (Optional AI Drafting)
+
+If Ollama is installed locally, you can use:
+
+-   `scribe` --- draft structured OSINT reports
+-   Export to JSON or Markdown
+-   View reports in the local PWA viewer
+
+Ollama must be installed separately:
+
+https://ollama.com/
+
+------------------------------------------------------------------------
 
 ## Configuration
 
-- Default SOCKS proxy: `socks5h://127.0.0.1:9052`
-  - If your Tor listens on a different port, either:
-    - set up a local socket forwarding, or
-    - edit the script where proxies are created (search for `socks5h://127.0.0.1:9052`) and replace with your port.
-- Safe tracker blocklist: `self.safe_blocklist` — change if needed.
+Default SOCKS proxy:
 
----
+    socks5h://127.0.0.1:9052
 
-Note: [Scribe Guide](https://github.com/Darkelf2024/Darkelf-OSINT-Toolkit-Lite/blob/main/SCRIBE_GUIDE.md)
+If your Tor uses another port: - Edit proxy configuration inside the
+script.
+
+Safe tracker blocklist: - Modify `self.safe_blocklist` if needed.
+
+------------------------------------------------------------------------
 
 ## Security & Legal
 
-- Use this toolkit only for lawful, authorized OSINT and research tasks.
-- Tor provides network-level anonymity but does NOT remove legal/ethical obligations.
-- The Kyber vault depends on liboqs/oqs; ensure you verify and secure generated private keys.
-- The script writes logs to `darkelf_activity.log` and vault files to `vault/` — do not leave sensitive files on disk if you cannot secure them.
-- The original Darkelf project had strong anti-forensics and self-wipe features; this refactor intentionally disables aggressive destructive behavior from the interactive path. Secure wipe helpers are intentionally gated and require explicit operator confirmation.
+-   Use only for lawful, authorized OSINT research.
+-   Tor provides network-level anonymity but does not remove legal
+    responsibility.
+-   WHOIS and DNS queries may still reveal activity to upstream
+    providers.
+-   Exports are stored under `~/Documents/Darkelf/`.
+-   Logs are written to `darkelf_activity.log`.
 
----
+No destructive anti-forensics features are enabled in this Lite
+refactor.
+
+------------------------------------------------------------------------
 
 ## Troubleshooting
 
-- "Tor not reachable" or timeout errors:
-  - Confirm Tor is running and bound to the configured port.
-  - Confirm `pysocks` is installed so `requests` can use `socks5h://`.
-- "Vault unavailable":
-  - Make sure `liboqs` is installed and `pip install oqs` succeeded.
-  - Running `python -c "import oqs; print(oqs.__version__)"` should succeed.
-- Network fetch returns empty or parsing errors:
-  - Some sites block Tor exit nodes or present anti-bot challenges. Use the onion DuckDuckGo Lite endpoint where appropriate.
+Tor not reachable: - Confirm Tor is running. - Confirm correct SOCKS
+port. - Ensure `pysocks` is installed.
 
----
+WHOIS errors: - Ensure `python-whois` is installed. - Remove incorrect
+`whois` package if present.
+
+DNS errors: - Ensure `dnspython` is installed.
+
+------------------------------------------------------------------------
 
 ## Contributing
 
-Contributions welcome. Suggested workflow:
-1. Fork the repo.
-2. Add/modify code in a feature branch.
-3. Open a PR with a clear description and tests if applicable.
+Contributions welcome.
 
-Please avoid adding destructive anti-forensics code paths without clear opt-in flags and safeguards.
+-   Fork the repo
+-   Create a feature branch
+-   Submit a PR with clear description
 
----
+Avoid adding destructive or unsafe features without explicit safeguards.
+
+------------------------------------------------------------------------
 
 ## License
 
-LGPL-3.0-or-later — see LICENSE file in this repository.
+LGPL-3.0-or-later --- see LICENSE file.
 
----
+------------------------------------------------------------------------
 
-## Contact / Attribution
+## Attribution
 
-Refactor by: Darkelf2024  
-Original author / inspiration: Dr. Kevin Moore and the Darkelf project.
+Refactor by: Darkelf2024\
+Original inspiration: Dr. Kevin Moore and the Darkelf project.
