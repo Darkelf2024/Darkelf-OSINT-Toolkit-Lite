@@ -111,7 +111,13 @@ from typing import Dict, Iterable, List, Optional, Set, Tuple
 import requests
 import tldextract
 from bs4 import BeautifulSoup
-from phonenumbers import PhoneNumberMatcher, PhoneNumberFormat, parse as parse_phone, is_valid_number, format_number
+from phonenumbers import (
+    PhoneNumberMatcher,
+    PhoneNumberFormat,
+    parse as parse_phone,
+    is_valid_number,
+    format_number,
+)
 from rich import box
 from rich.align import Align
 from rich.console import Console
@@ -125,23 +131,25 @@ from rich.text import Text
 try:
     import dns.resolver
     import dns.reversename
+
     DNS_AVAILABLE = True
 except ImportError:
     DNS_AVAILABLE = False
-    
+
 try:
     import whois as python_whois
+
     WHOIS_AVAILABLE = True
 except ImportError:
     WHOIS_AVAILABLE = False
-    
-import subprocess
+
+import subprocess  # nosec B404
 
 try:
     import psutil  # optional, for RAM detection
 except Exception:
     psutil = None
-    
+
 from typing import Any
 
 from stem.control import Controller
@@ -152,8 +160,10 @@ from pathlib import Path
 OUTPUT_DIR = Path.home() / "Documents" / "Darkelf"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+
 def output_path(filename: str) -> Path:
     return OUTPUT_DIR / filename
+
 
 TOR_PORT = 9052  # detected from tor startup
 PROXY = f"socks5h://127.0.0.1:{TOR_PORT}"
@@ -164,19 +174,21 @@ PROXY = f"socks5h://127.0.0.1:{TOR_PORT}"
 console = Console()
 LOG_PATH = "darkelf_activity.log"
 
+
 def _log(msg: str, level: str = "INFO"):
     line = f"{datetime.utcnow().isoformat()} [{level}] {msg}"
     try:
         with open(LOG_PATH, "a", encoding="utf-8") as f:
             f.write(line + "\n")
-    except Exception:
-        pass
+    except Exception as e:
+        console.print(f"[yellow]Log write failed:[/yellow] {e}")
     if level == "ERROR":
         console.print(f"[red]{line}[/red]")
     elif level == "WARN":
         console.print(f"[yellow]{line}[/yellow]")
     else:
         console.print(f"[cyan]{line}[/cyan]")
+
 
 # ---------------------------
 # Tor Manager Using Stem
@@ -193,17 +205,24 @@ class TorManager:
         """Launch Tor process and establish a control connection."""
         try:
             self.tor_process = launch_tor_with_config(
-                config={"SOCKSPort": str(self.socks_port), "ControlPort": str(self.control_port)},
+                config={
+                    "SOCKSPort": str(self.socks_port),
+                    "ControlPort": str(self.control_port),
+                },
                 init_msg_handler=self._tor_output_handler,
                 tor_cmd=self.tor_binary,
             )
             self.tor_controller = Controller.from_port(port=self.control_port)
             self.tor_controller.authenticate()
             self.tor_controller.signal(Signal.NEWNYM)
-            console.print(f"[green]Tor started successfully on SOCKSPort {self.socks_port} and ControlPort {self.control_port}[/green]")
+            console.print(
+                f"[green]Tor started successfully on SOCKSPort {self.socks_port} and ControlPort {self.control_port}[/green]"
+            )
         except Exception as e:
             _log(f"Failed to start Tor: {e}", "ERROR")
-            raise RuntimeError("Tor startup failed. Ensure that Tor is installed and accessible.")
+            raise RuntimeError(
+                "Tor startup failed. Ensure that Tor is installed and accessible."
+            )
 
     def new_identity(self):
         """Request a new identity from the Tor network."""
@@ -224,13 +243,18 @@ class TorManager:
     def _tor_output_handler(line):
         _log(line.strip(), level="INFO")
 
+
 # ---------------------------
 # Utility helpers
 # ---------------------------
 EMAIL_RE = re.compile(r"\b[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[A-Za-z]{2,63}\b")
-HASH_RE = re.compile(r"\b([a-fA-F0-9]{32}|[a-fA-F0-9]{40}|[a-fA-F0-9]{56}|[a-fA-F0-9]{64})\b")
+HASH_RE = re.compile(
+    r"\b([a-fA-F0-9]{32}|[a-fA-F0-9]{40}|[a-fA-F0-9]{56}|[a-fA-F0-9]{64})\b"
+)
 USERNAME_RE = re.compile(r"@([\w\-_]{3,32})")
-IPV4_RE = re.compile(r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d{1,2})\.){3}(?:25[0-5]|2[0-4]\d|1?\d{1,2})\b")
+IPV4_RE = re.compile(
+    r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d{1,2})\.){3}(?:25[0-5]|2[0-4]\d|1?\d{1,2})\b"
+)
 
 
 def normalize_domain(token: str) -> Optional[str]:
@@ -241,14 +265,17 @@ def normalize_domain(token: str) -> Optional[str]:
     return None
 
 
-def pretty_table(rows: Iterable[Tuple], columns: List[str], title: Optional[str] = None) -> None:
+def pretty_table(
+    rows: Iterable[Tuple], columns: List[str], title: Optional[str] = None
+) -> None:
     table = Table(title=title, box=box.SIMPLE_HEAVY)
     for c in columns:
         table.add_column(c)
     for row in rows:
         table.add_row(*[str(x) for x in row])
     console.print(table)
-    
+
+
 SCRIBE_REPORT_SCHEMA = {
     "type": "object",
     "required": ["metadata", "summary", "evidence", "sources"],
@@ -262,9 +289,10 @@ SCRIBE_REPORT_SCHEMA = {
         "sources": {"type": "array", "items": {"type": "string"}},
         "investigator_notes": {"type": "string"},
         "extracted_indicators": {"type": "object"},
-        "legal_notice": {"type": "string"}
-    }
+        "legal_notice": {"type": "string"},
+    },
 }
+
 
 # ---------------------------
 # Indicator Extraction
@@ -294,7 +322,8 @@ class Indicators:
                 # Quick sanity, keep only routable addresses
                 ip = socket.inet_aton(m)  # will raise on invalid
                 self.ips.add(m)
-            except Exception:
+            except Exception as e:
+                _log(f"Indicator extraction skipped item: {e}", "WARN")
                 continue
         # hashes
         for h in HASH_RE.findall(text):
@@ -315,7 +344,8 @@ def PhoneNumberMatcherIter(text: str, region="US"):
         try:
             if is_valid_number(m.number):
                 yield format_number(m.number, PhoneNumberFormat.E164)
-        except Exception:
+        except Exception as e:
+            _log(f"Phone parse error: {e}", "WARN")
             continue
 
 
@@ -323,10 +353,17 @@ def PhoneNumberMatcherIter(text: str, region="US"):
 # DuckDuckGo (Onion/Clearnet) Lightweight Scraper
 # ---------------------------
 class DuckDuckGoLite:
-    LITE_ONION = "https://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion/lite"
+    LITE_ONION = (
+        "https://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion/lite"
+    )
     HTML_CLEARNET = "https://duckduckgo.com/html/"
 
-    def __init__(self, use_tor: bool = True, proxies: Optional[Dict[str, str]] = None, user_agent: Optional[str] = None):
+    def __init__(
+        self,
+        use_tor: bool = True,
+        proxies: Optional[Dict[str, str]] = None,
+        user_agent: Optional[str] = None,
+    ):
         self.session = requests.Session()
         self.use_tor = use_tor
 
@@ -338,7 +375,9 @@ class DuckDuckGoLite:
         else:
             self.proxies = None
 
-        self.session.headers.update({"User-Agent": user_agent or "DarkelfCLI/3.1 (OSINT) - Stealth/Tor"})
+        self.session.headers.update(
+            {"User-Agent": user_agent or "DarkelfCLI/3.1 (OSINT) - Stealth/Tor"}
+        )
 
     def _detect_tor_proxy(self) -> Dict[str, str]:
         """Try common Tor proxy ports and return a working one."""
@@ -348,17 +387,19 @@ class DuckDuckGoLite:
                 s.close()
                 return {
                     "http": f"socks5h://127.0.0.1:{port}",
-                    "https": f"socks5h://127.0.0.1:{port}"
+                    "https": f"socks5h://127.0.0.1:{port}",
                 }
-            except Exception:
+            except Exception as e:
+                _log(f"Indicator extraction skipped item: {e}", "WARN")
                 continue
 
         # Last resort: return None, so clearnet works instead of failing
         _log("Tor not detected — proxy disabled, using clearnet only", "WARN")
         return None
 
-
-    def search(self, query: str, max_results: int = 8, use_onion: bool = False) -> List[Tuple[str, str, str]]:
+    def search(
+        self, query: str, max_results: int = 8, use_onion: bool = False
+    ) -> List[Tuple[str, str, str]]:
         """
         Return list of tuples: (title, url, snippet)
         """
@@ -382,7 +423,9 @@ class DuckDuckGoLite:
         if not out:
             url = self.HTML_CLEARNET
             try:
-                r = self.session.get(url, params={"q": query}, timeout=15, proxies=self.proxies)
+                r = self.session.get(
+                    url, params={"q": query}, timeout=15, proxies=self.proxies
+                )
                 r.raise_for_status()
                 soup = BeautifulSoup(r.text, "html.parser")
                 for rdiv in soup.select(".result"):
@@ -405,7 +448,12 @@ class DuckDuckGoLite:
 # ---------------------------
 # Lightweight fetch / safe rendering
 # ---------------------------
-def fetch_url_text(url: str, use_tor: bool = True, timeout: int = 15, safe_blocklist: Optional[Iterable[str]] = None) -> Tuple[str, str]:
+def fetch_url_text(
+    url: str,
+    use_tor: bool = True,
+    timeout: int = 15,
+    safe_blocklist: Optional[Iterable[str]] = None,
+) -> Tuple[str, str]:
     """
     Fetch a URL and return (final_url, text_content). Safe blocklist prevents fetching known tracker domains.
 
@@ -420,7 +468,11 @@ def fetch_url_text(url: str, use_tor: bool = True, timeout: int = 15, safe_block
             raise ValueError(f"Blocked host by policy: {host}")
 
     session = requests.Session()
-    proxies = {"http": "socks5h://127.0.0.1:9052", "https": "socks5h://127.0.0.1:9052"} if use_tor else None
+    proxies = (
+        {"http": "socks5h://127.0.0.1:9052", "https": "socks5h://127.0.0.1:9052"}
+        if use_tor
+        else None
+    )
     headers = {"User-Agent": "DarkelfCLI/3.1 - Stealth/Tor"}
     r = session.get(url, timeout=timeout, proxies=proxies, headers=headers)
     r.raise_for_status()
@@ -440,23 +492,26 @@ class WHOISDNSLookup:
     WHOIS and DNS lookup utility that routes all queries through Tor.
     Provides domain/IP WHOIS, DNS record queries, and reverse DNS lookups.
     """
-    
+
     def __init__(self, use_tor: bool = True, socks_port: int = 9052):
         self.use_tor = use_tor
         self.socks_port = socks_port
-        
+
         # Configure DNS resolver to use Tor if available
         if DNS_AVAILABLE and use_tor:
             self.resolver = dns.resolver.Resolver()
             # Note: dnspython doesn't natively support SOCKS proxies
             # For production, consider using a local DNS forwarder through Tor
-            _log("DNS resolver initialized (note: direct Tor routing for DNS may require additional setup)", "WARN")
+            _log(
+                "DNS resolver initialized (note: direct Tor routing for DNS may require additional setup)",
+                "WARN",
+            )
         elif DNS_AVAILABLE:
             self.resolver = dns.resolver.Resolver()
         else:
             self.resolver = None
             _log("dnspython not available - DNS lookups disabled", "WARN")
-    
+
     def whois_domain(self, domain: str) -> Dict[str, Any]:
         """
         Perform WHOIS lookup for a domain.
@@ -464,53 +519,59 @@ class WHOISDNSLookup:
         """
         if not WHOIS_AVAILABLE:
             return {"error": "python-whois library not installed"}
-        
+
         try:
             _log(f"WHOIS lookup for domain: {domain}")
-            
+
             # python-whois doesn't support SOCKS proxies directly
             # For true Tor routing, would need to implement raw WHOIS protocol
             w = python_whois.whois(domain)
-            
+
             result = {
                 "domain": domain,
-                "registrar": w.registrar if hasattr(w, 'registrar') else None,
-                "creation_date": str(w.creation_date) if hasattr(w, 'creation_date') else None,
-                "expiration_date": str(w.expiration_date) if hasattr(w, 'expiration_date') else None,
-                "updated_date": str(w.updated_date) if hasattr(w, 'updated_date') else None,
-                "status": w.status if hasattr(w, 'status') else None,
-                "nameservers": w.name_servers if hasattr(w, 'name_servers') else None,
-                "emails": w.emails if hasattr(w, 'emails') else None,
+                "registrar": w.registrar if hasattr(w, "registrar") else None,
+                "creation_date": (
+                    str(w.creation_date) if hasattr(w, "creation_date") else None
+                ),
+                "expiration_date": (
+                    str(w.expiration_date) if hasattr(w, "expiration_date") else None
+                ),
+                "updated_date": (
+                    str(w.updated_date) if hasattr(w, "updated_date") else None
+                ),
+                "status": w.status if hasattr(w, "status") else None,
+                "nameservers": w.name_servers if hasattr(w, "name_servers") else None,
+                "emails": w.emails if hasattr(w, "emails") else None,
             }
-            
+
             return result
-            
+
         except Exception as e:
             _log(f"WHOIS lookup failed for {domain}: {e}", "ERROR")
             return {"error": str(e), "domain": domain}
-    
+
     def whois_ip(self, ip: str) -> Dict[str, Any]:
         """
         Perform WHOIS lookup for an IP address.
         """
         try:
             _log(f"WHOIS lookup for IP: {ip}")
-            
+
             # Use requests through Tor SOCKS proxy to query WHOIS
             # This is a simple implementation - production would use proper WHOIS protocol
             session = requests.Session()
             if self.use_tor:
                 session.proxies = {
                     "http": f"socks5h://127.0.0.1:{self.socks_port}",
-                    "https": f"socks5h://127.0.0.1:{self.socks_port}"
+                    "https": f"socks5h://127.0.0.1:{self.socks_port}",
                 }
-            
+
             # Query ipwhois.io API (supports Tor)
             url = f"https://ipwhois.app/json/{ip}"
             r = session.get(url, timeout=15)
             r.raise_for_status()
             data = r.json()
-            
+
             result = {
                 "ip": ip,
                 "country": data.get("country"),
@@ -521,13 +582,13 @@ class WHOISDNSLookup:
                 "asn": data.get("asn"),
                 "continent": data.get("continent"),
             }
-            
+
             return result
-            
+
         except Exception as e:
             _log(f"IP WHOIS lookup failed for {ip}: {e}", "ERROR")
             return {"error": str(e), "ip": ip}
-    
+
     def dns_query(self, domain: str, record_type: str = "A") -> List[Dict[str, Any]]:
         """
         Query DNS records for a domain.
@@ -535,20 +596,20 @@ class WHOISDNSLookup:
         """
         if not DNS_AVAILABLE:
             return [{"error": "dnspython library not installed"}]
-        
+
         try:
             _log(f"DNS {record_type} query for: {domain}")
-            
+
             answers = self.resolver.resolve(domain, record_type)
             results = []
-            
+
             for rdata in answers:
                 result = {
                     "type": record_type,
                     "domain": domain,
                     "ttl": answers.rrset.ttl,
                 }
-                
+
                 if record_type == "MX":
                     result["priority"] = rdata.preference
                     result["value"] = str(rdata.exchange)
@@ -558,11 +619,11 @@ class WHOISDNSLookup:
                     result["serial"] = rdata.serial
                 else:
                     result["value"] = str(rdata)
-                
+
                 results.append(result)
-            
+
             return results
-            
+
         except dns.resolver.NXDOMAIN:
             return [{"error": "Domain does not exist", "domain": domain}]
         except dns.resolver.NoAnswer:
@@ -570,33 +631,35 @@ class WHOISDNSLookup:
         except Exception as e:
             _log(f"DNS query failed for {domain} ({record_type}): {e}", "ERROR")
             return [{"error": str(e), "domain": domain}]
-    
+
     def reverse_dns(self, ip: str) -> Dict[str, Any]:
         """
         Perform reverse DNS lookup (PTR record) for an IP.
         """
         if not DNS_AVAILABLE:
             return {"error": "dnspython library not installed"}
-        
+
         try:
             _log(f"Reverse DNS lookup for: {ip}")
-            
+
             addr = dns.reversename.from_address(ip)
             answers = self.resolver.resolve(addr, "PTR")
-            
+
             hostnames = [str(rdata) for rdata in answers]
-            
+
             return {
                 "ip": ip,
                 "hostnames": hostnames,
-                "ttl": answers.rrset.ttl if answers else None
+                "ttl": answers.rrset.ttl if answers else None,
             }
-            
+
         except Exception as e:
             _log(f"Reverse DNS failed for {ip}: {e}", "ERROR")
             return {"error": str(e), "ip": ip}
-    
-    def bulk_dns_lookup(self, domains: Iterable[str], record_type: str = "A") -> Dict[str, List[Dict[str, Any]]]:
+
+    def bulk_dns_lookup(
+        self, domains: Iterable[str], record_type: str = "A"
+    ) -> Dict[str, List[Dict[str, Any]]]:
         """
         Perform DNS lookups for multiple domains.
         Returns dict mapping domain to results.
@@ -606,7 +669,7 @@ class WHOISDNSLookup:
             results[domain] = self.dns_query(domain, record_type)
             time.sleep(0.1)  # Rate limiting
         return results
-    
+
     def bulk_reverse_dns(self, ips: Iterable[str]) -> Dict[str, Dict[str, Any]]:
         """
         Perform reverse DNS lookups for multiple IPs.
@@ -616,7 +679,8 @@ class WHOISDNSLookup:
             results[ip] = self.reverse_dns(ip)
             time.sleep(0.1)  # Rate limiting
         return results
-        
+
+
 PWA_INDEX_HTML = r"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -753,6 +817,7 @@ PWA_SERVICE_WORKER_JS = """self.addEventListener("install", e => {
 });
 """
 
+
 # ---------------------------
 # CLI: Lightweight, guided interactions
 # ---------------------------
@@ -762,10 +827,14 @@ class DarkelfCLI:
         # Always enable Tor/Stealth by default
         self.ddg = DuckDuckGoLite(use_tor=True)
         self.whois_dns = WHOISDNSLookup(use_tor=True)
-        self.safe_blocklist = {"google-analytics.com", "doubleclick.net", "facebook.net"}
+        self.safe_blocklist = {
+            "google-analytics.com",
+            "doubleclick.net",
+            "facebook.net",
+        }
         self.running = True
         self.stealth_mode = True  # explicit flag for UI/logic if needed
-        
+
         # Darkelf OSINT Ai Queue
         self.ai_queue = []
         self.ai_worker_running = False
@@ -792,13 +861,15 @@ class DarkelfCLI:
         console.clear()
         dns_status = "available" if DNS_AVAILABLE else "unavailable"
         whois_status = "available" if WHOIS_AVAILABLE else "unavailable"
-        console.print(Panel.fit(
-            Text.from_markup(
-                "[bold green]ＤＡＲＫＥＬＦ[/bold green] — OSINT Toolkit (Refactored)\n"
-                f"[dim]Stealth: ON · Tor: enabled · DNS: {dns_status} · WHOIS: {whois_status}[/dim]"
-            ),
-            border_style="bright_magenta",
-        ))
+        console.print(
+            Panel.fit(
+                Text.from_markup(
+                    "[bold green]ＤＡＲＫＥＬＦ[/bold green] — OSINT Toolkit (Refactored)\n"
+                    f"[dim]Stealth: ON · Tor: enabled · DNS: {dns_status} · WHOIS: {whois_status}[/dim]"
+                ),
+                border_style="bright_magenta",
+            )
+        )
 
     def main_menu(self):
         self.banner()
@@ -810,12 +881,16 @@ class DarkelfCLI:
         menu.add_row("3) indicators", "Show extracted indicators and export")
         menu.add_row("4) fetch", "Fetch & preview a URL (safe-blocked) — via Tor")
         menu.add_row("5) whois/dns", "WHOIS & DNS lookups (via Tor)")
-        menu.add_row("6) scribe", "Darkelf Scribe — Draft TraceLabs / CTF submission (local AI)")
+        menu.add_row(
+            "6) scribe", "Darkelf Scribe — Draft TraceLabs / CTF submission (local AI)"
+        )
         menu.add_row("7) viewer", "Open Darkelf Scribe PWA Viewer (offline)")
         menu.add_row("8) help", "Show help")
         menu.add_row("q) quit", "Exit")
         console.print(menu)
-        choice = Prompt.ask("Select", choices=["1", "2", "3", "4", "5", "6", "7", "8", "q"], default="1")
+        choice = Prompt.ask(
+            "Select", choices=["1", "2", "3", "4", "5", "6", "7", "8", "q"], default="1"
+        )
         return choice
 
     def cmd_scan(self):
@@ -827,39 +902,53 @@ class DarkelfCLI:
         self.indicators.ingest_text(query)
         # If looks like email, run email-centric dorks
         if "@" in query:
-            console.print("[green]Email detected — running quick dork suggestions (via Tor)[/green]")
+            console.print(
+                "[green]Email detected — running quick dork suggestions (via Tor)[/green]"
+            )
             dorks = [
                 f'"{query}" site:pastebin.com',
                 f'"{query}" site:github.com',
-                f'"{query}" filetype:txt'
+                f'"{query}" filetype:txt',
             ]
             for d in dorks:
                 console.print(f" • {d}")
         elif re.match(r"^\+?\d[\d\s()\-]{7,}$", query):
-            console.print("[green]Phone-like input — normalizing and suggesting dorks[/green]")
+            console.print(
+                "[green]Phone-like input — normalizing and suggesting dorks[/green]"
+            )
             # use phonenumbers normalize attempting E164
             try:
                 pnorm = next(PhoneNumberMatcherIter(query), None)
                 if pnorm:
                     console.print(f"Normalized: {pnorm}")
                     self.indicators.phones.add(pnorm)
-            except Exception:
-                pass
-        # Quick DDG search summary (Tor enforced)
+            except Exception as e:
+                _log(
+                    f"Phone normalization failed: {e}", "WARN"
+                )  # Quick DDG search summary (Tor enforced)
         results = self.ddg.search(query, max_results=6, use_onion=True)
         if results:
-            pretty_table([(i + 1, t, u) for i, (t, u, s) in enumerate(results)], ["#", "Title", "URL"],
-                         title=f"Top {len(results)} DDG results (via Tor)")
+            pretty_table(
+                [(i + 1, t, u) for i, (t, u, s) in enumerate(results)],
+                ["#", "Title", "URL"],
+                title=f"Top {len(results)} DDG results (via Tor)",
+            )
             # ingest snippets/urls
             for title, url, snippet in results:
                 self.indicators.ingest_text(f"{title} {url} {snippet}")
         else:
-            console.print("[yellow]No quick results from DuckDuckGo (via Tor).[/yellow]")
+            console.print(
+                "[yellow]No quick results from DuckDuckGo (via Tor).[/yellow]"
+            )
 
     def cmd_dork(self):
-        query = Prompt.ask("Dork query (raw) — e.g. \"'joe@example.com' site:pastebin.com'\"").strip()
+        query = Prompt.ask(
+            "Dork query (raw) — e.g. \"'joe@example.com' site:pastebin.com'\""
+        ).strip()
         # Since Tor is enforced, default use_onion True
-        use_onion = Confirm.ask("Use DuckDuckGo Onion Lite (via Tor/proxy)?", default=True)
+        use_onion = Confirm.ask(
+            "Use DuckDuckGo Onion Lite (via Tor/proxy)?", default=True
+        )
         results = self.ddg.search(query, max_results=12, use_onion=use_onion)
         if not results:
             console.print("[yellow]No results.[/yellow]")
@@ -869,13 +958,19 @@ class DarkelfCLI:
             table_rows.append((i, title, url))
         pretty_table(table_rows, ["#", "Title", "URL"], title="Dork Results")
         # Optionally fetch one (via Tor)
-        if Confirm.ask("Fetch a result to preview content? (will use Tor)", default=False):
+        if Confirm.ask(
+            "Fetch a result to preview content? (will use Tor)", default=False
+        ):
             idx = Prompt.ask("Result # to fetch (1..%d)" % (len(results)), default="1")
             try:
                 idxi = int(idx) - 1
                 _, url, _ = results[idxi]
-                final_url, text = fetch_url_text(url, use_tor=True, safe_blocklist=self.safe_blocklist)
-                console.print(Panel(Text("\n".join(text.splitlines()[:30])), title=final_url))
+                final_url, text = fetch_url_text(
+                    url, use_tor=True, safe_blocklist=self.safe_blocklist
+                )
+                console.print(
+                    Panel(Text("\n".join(text.splitlines()[:30])), title=final_url)
+                )
                 self.indicators.ingest_text(text)
             except Exception as e:
                 _log(f"Fetch failed: {e}", "WARN")
@@ -902,7 +997,7 @@ class DarkelfCLI:
                     "ips": sorted(self.indicators.ips),
                     "hashes": sorted(self.indicators.hashes),
                     "phones": sorted(self.indicators.phones),
-                }
+                },
             }
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(payload, f, indent=2)
@@ -914,8 +1009,14 @@ class DarkelfCLI:
             return
         try:
             # Enforced Tor/proxy by default
-            final, text = fetch_url_text(url, use_tor=True, safe_blocklist=self.safe_blocklist)
-            console.print(Panel(Text("\n".join(text.splitlines()[:40])), title=f"Preview: {final}"))
+            final, text = fetch_url_text(
+                url, use_tor=True, safe_blocklist=self.safe_blocklist
+            )
+            console.print(
+                Panel(
+                    Text("\n".join(text.splitlines()[:40])), title=f"Preview: {final}"
+                )
+            )
             self.indicators.ingest_text(text)
         except Exception as e:
             console.print(f"[red]Fetch error: {e}[/red]")
@@ -924,7 +1025,7 @@ class DarkelfCLI:
     def cmd_whois_dns(self):
         """WHOIS/DNS lookup command with submenu."""
         console.print(Rule("WHOIS / DNS Lookup"))
-        
+
         table = Table(show_header=False, box=box.MINIMAL)
         table.add_column("", style="cyan")
         table.add_column("", style="white")
@@ -935,9 +1036,11 @@ class DarkelfCLI:
         table.add_row("5) bulk lookup", "Bulk DNS/reverse DNS from indicators")
         table.add_row("6) back", "Return to main menu")
         console.print(table)
-        
-        choice = Prompt.ask("Choose", choices=["1", "2", "3", "4", "5", "6"], default="1")
-        
+
+        choice = Prompt.ask(
+            "Choose", choices=["1", "2", "3", "4", "5", "6"], default="1"
+        )
+
         if choice == "1":
             self._whois_domain_lookup()
         elif choice == "2":
@@ -949,50 +1052,64 @@ class DarkelfCLI:
         elif choice == "5":
             self._bulk_lookup()
         # choice == "6" returns to main menu
-    
+
     def _whois_domain_lookup(self):
         """Perform WHOIS lookup for a domain."""
         domain = Prompt.ask("Domain to lookup (e.g., example.com)").strip()
         if not domain:
             return
-        
+
         with console.status(f"[bold green]Looking up WHOIS for {domain}..."):
             result = self.whois_dns.whois_domain(domain)
-        
+
         if "error" in result:
             console.print(f"[red]Error: {result['error']}[/red]")
             return
-        
+
         # Display in a panel
         lines = []
         lines.append(f"[bold cyan]Domain:[/bold cyan] {result.get('domain', 'N/A')}")
-        lines.append(f"[bold cyan]Registrar:[/bold cyan] {result.get('registrar', 'N/A')}")
-        lines.append(f"[bold cyan]Created:[/bold cyan] {result.get('creation_date', 'N/A')}")
-        lines.append(f"[bold cyan]Expires:[/bold cyan] {result.get('expiration_date', 'N/A')}")
-        lines.append(f"[bold cyan]Updated:[/bold cyan] {result.get('updated_date', 'N/A')}")
-        
-        if result.get('nameservers'):
-            ns = result['nameservers']
+        lines.append(
+            f"[bold cyan]Registrar:[/bold cyan] {result.get('registrar', 'N/A')}"
+        )
+        lines.append(
+            f"[bold cyan]Created:[/bold cyan] {result.get('creation_date', 'N/A')}"
+        )
+        lines.append(
+            f"[bold cyan]Expires:[/bold cyan] {result.get('expiration_date', 'N/A')}"
+        )
+        lines.append(
+            f"[bold cyan]Updated:[/bold cyan] {result.get('updated_date', 'N/A')}"
+        )
+
+        if result.get("nameservers"):
+            ns = result["nameservers"]
             if isinstance(ns, list):
                 lines.append(f"[bold cyan]Nameservers:[/bold cyan] {', '.join(ns[:3])}")
             else:
                 lines.append(f"[bold cyan]Nameservers:[/bold cyan] {ns}")
-        
-        if result.get('emails'):
-            emails = result['emails']
+
+        if result.get("emails"):
+            emails = result["emails"]
             if isinstance(emails, list):
                 lines.append(f"[bold cyan]Emails:[/bold cyan] {', '.join(emails)}")
             else:
                 lines.append(f"[bold cyan]Emails:[/bold cyan] {emails}")
-        
-        console.print(Panel("\n".join(lines), title=f"WHOIS: {domain}", border_style="green"))
-        
+
+        console.print(
+            Panel("\n".join(lines), title=f"WHOIS: {domain}", border_style="green")
+        )
+
         # Auto-ingest discovered data
-        if result.get('emails'):
-            emails = result['emails'] if isinstance(result['emails'], list) else [result['emails']]
+        if result.get("emails"):
+            emails = (
+                result["emails"]
+                if isinstance(result["emails"], list)
+                else [result["emails"]]
+            )
             for email in emails:
                 self.indicators.emails.add(email.lower())
-        
+
         if Confirm.ask("Export to JSON?", default=False):
             filename = f"whois_{domain.replace('.', '_')}_{int(time.time())}.json"
             full_path = output_path(filename)
@@ -1001,20 +1118,20 @@ class DarkelfCLI:
                 json.dump(result, f, indent=2)
 
             console.print(f"[green]Saved to {full_path}[/green]")
-    
+
     def _whois_ip_lookup(self):
         """Perform WHOIS lookup for an IP address."""
         ip = Prompt.ask("IP address to lookup (e.g., 8.8.8.8)").strip()
         if not ip:
             return
-        
+
         with console.status(f"[bold green]Looking up WHOIS for {ip}..."):
             result = self.whois_dns.whois_ip(ip)
-        
+
         if "error" in result:
             console.print(f"[red]Error: {result['error']}[/red]")
             return
-        
+
         # Display in a panel
         lines = []
         lines.append(f"[bold cyan]IP:[/bold cyan] {result.get('ip', 'N/A')}")
@@ -1024,9 +1141,11 @@ class DarkelfCLI:
         lines.append(f"[bold cyan]ISP:[/bold cyan] {result.get('isp', 'N/A')}")
         lines.append(f"[bold cyan]Organization:[/bold cyan] {result.get('org', 'N/A')}")
         lines.append(f"[bold cyan]ASN:[/bold cyan] {result.get('asn', 'N/A')}")
-        
-        console.print(Panel("\n".join(lines), title=f"IP WHOIS: {ip}", border_style="green"))
-        
+
+        console.print(
+            Panel("\n".join(lines), title=f"IP WHOIS: {ip}", border_style="green")
+        )
+
         if Confirm.ask("Export to JSON?", default=False):
             filename = f"whois_{ip.replace('.', '_')}_{int(time.time())}.json"
             full_path = output_path(filename)
@@ -1035,33 +1154,45 @@ class DarkelfCLI:
                 json.dump(result, f, indent=2)
 
             console.print(f"[green]Saved to {full_path}[/green]")
-    
+
     def _dns_records_lookup(self):
         """Query DNS records for a domain."""
         domain = Prompt.ask("Domain to query (e.g., example.com)").strip()
         if not domain:
             return
-        
-        console.print("\n[dim]Available record types: A, AAAA, MX, TXT, NS, CNAME, SOA[/dim]")
+
+        console.print(
+            "\n[dim]Available record types: A, AAAA, MX, TXT, NS, CNAME, SOA[/dim]"
+        )
         record_type = Prompt.ask("Record type", default="A").strip().upper()
-        
-        with console.status(f"[bold green]Querying {record_type} records for {domain}..."):
+
+        with console.status(
+            f"[bold green]Querying {record_type} records for {domain}..."
+        ):
             results = self.whois_dns.dns_query(domain, record_type)
-        
+
         if not results or "error" in results[0]:
-            error = results[0].get("error", "Unknown error") if results else "No results"
+            error = (
+                results[0].get("error", "Unknown error") if results else "No results"
+            )
             console.print(f"[red]Error: {error}[/red]")
             return
-        
+
         # Display as table
-        table = Table(title=f"DNS {record_type} Records: {domain}", box=box.SIMPLE_HEAVY)
-        
+        table = Table(
+            title=f"DNS {record_type} Records: {domain}", box=box.SIMPLE_HEAVY
+        )
+
         if record_type == "MX":
             table.add_column("Priority", style="cyan")
             table.add_column("Value", style="white")
             table.add_column("TTL", style="dim")
             for r in results:
-                table.add_row(str(r.get("priority", "")), r.get("value", ""), str(r.get("ttl", "")))
+                table.add_row(
+                    str(r.get("priority", "")),
+                    r.get("value", ""),
+                    str(r.get("ttl", "")),
+                )
         elif record_type == "SOA":
             table.add_column("Field", style="cyan")
             table.add_column("Value", style="white")
@@ -1075,9 +1206,9 @@ class DarkelfCLI:
             table.add_column("TTL", style="dim")
             for r in results:
                 table.add_row(r.get("value", ""), str(r.get("ttl", "")))
-        
+
         console.print(table)
-        
+
         # Auto-ingest discovered IPs and domains
         for r in results:
             value = r.get("value", "")
@@ -1087,49 +1218,53 @@ class DarkelfCLI:
                 domain_normalized = normalize_domain(value)
                 if domain_normalized:
                     self.indicators.domains.add(domain_normalized)
-        
+
         if Confirm.ask("Export to JSON?", default=False):
-            filename = f"dns_{record_type}_{domain.replace('.', '_')}_{int(time.time())}.json"
+            filename = (
+                f"dns_{record_type}_{domain.replace('.', '_')}_{int(time.time())}.json"
+            )
             full_path = output_path(filename)
 
             with open(full_path, "w", encoding="utf-8") as f:
                 json.dump(results, f, indent=2)
 
             console.print(f"[green]Saved to {full_path}[/green]")
-    
+
     def _reverse_dns_lookup(self):
         """Perform reverse DNS lookup for an IP."""
         ip = Prompt.ask("IP address for reverse DNS (e.g., 8.8.8.8)").strip()
         if not ip:
             return
-        
+
         with console.status(f"[bold green]Reverse DNS lookup for {ip}..."):
             result = self.whois_dns.reverse_dns(ip)
-        
+
         if "error" in result:
             console.print(f"[red]Error: {result['error']}[/red]")
             return
-        
+
         hostnames = result.get("hostnames", [])
         if not hostnames:
             console.print(f"[yellow]No PTR records found for {ip}[/yellow]")
             return
-        
+
         # Display
         lines = [f"[bold cyan]IP:[/bold cyan] {ip}"]
         lines.append(f"[bold cyan]Hostnames:[/bold cyan]")
         for hostname in hostnames:
             lines.append(f"  • {hostname}")
         lines.append(f"[dim]TTL: {result.get('ttl', 'N/A')}[/dim]")
-        
-        console.print(Panel("\n".join(lines), title="Reverse DNS", border_style="green"))
-        
+
+        console.print(
+            Panel("\n".join(lines), title="Reverse DNS", border_style="green")
+        )
+
         # Auto-ingest domains
         for hostname in hostnames:
             domain = normalize_domain(hostname)
             if domain:
                 self.indicators.domains.add(domain)
-        
+
         if Confirm.ask("Export to JSON?", default=False):
             filename = f"rdns_{ip.replace('.', '_')}_{int(time.time())}.json"
             full_path = output_path(filename)
@@ -1142,43 +1277,53 @@ class DarkelfCLI:
     def _bulk_lookup(self):
         """Perform bulk DNS/reverse DNS lookups from indicators."""
         console.print(Rule("Bulk Lookup from Indicators"))
-        
+
         if not self.indicators.domains and not self.indicators.ips:
-            console.print("[yellow]No domains or IPs in indicators. Run a scan first.[/yellow]")
+            console.print(
+                "[yellow]No domains or IPs in indicators. Run a scan first.[/yellow]"
+            )
             return
-        
+
         table = Table(show_header=False, box=box.MINIMAL)
         table.add_column("", style="cyan")
         table.add_column("", style="white")
-        table.add_row("1) dns", f"DNS A records for {len(self.indicators.domains)} domains")
+        table.add_row(
+            "1) dns", f"DNS A records for {len(self.indicators.domains)} domains"
+        )
         table.add_row("2) reverse", f"Reverse DNS for {len(self.indicators.ips)} IPs")
         table.add_row("3) both", "Both DNS and reverse DNS")
-        
+
         console.print(table)
         choice = Prompt.ask("Choose", choices=["1", "2", "3"], default="1")
-        
+
         all_results = {}
-        
+
         if choice in ("1", "3"):
-            console.print(f"\n[cyan]Querying DNS A records for {len(self.indicators.domains)} domains...[/cyan]")
+            console.print(
+                f"\n[cyan]Querying DNS A records for {len(self.indicators.domains)} domains...[/cyan]"
+            )
             with console.status("[bold green]Running bulk DNS lookups..."):
-                dns_results = self.whois_dns.bulk_dns_lookup(self.indicators.domains, "A")
+                dns_results = self.whois_dns.bulk_dns_lookup(
+                    self.indicators.domains, "A"
+                )
             all_results["dns"] = dns_results
-            
+
             # Summary
             success = sum(1 for r in dns_results.values() if r and "error" not in r[0])
             console.print(f"[green]✓ {success}/{len(dns_results)} successful[/green]")
-        
+
         if choice in ("2", "3"):
-            console.print(f"\n[cyan]Querying reverse DNS for {len(self.indicators.ips)} IPs...[/cyan]")
+            console.print(
+                f"\n[cyan]Querying reverse DNS for {len(self.indicators.ips)} IPs...[/cyan]"
+            )
             with console.status("[bold green]Running bulk reverse DNS lookups..."):
                 rdns_results = self.whois_dns.bulk_reverse_dns(self.indicators.ips)
             all_results["reverse_dns"] = rdns_results
-            
+
             # Summary
             success = sum(1 for r in rdns_results.values() if "error" not in r)
             console.print(f"[green]✓ {success}/{len(rdns_results)} successful[/green]")
-        
+
         if Confirm.ask("\nExport all results to JSON?", default=False):
             filename = f"bulk_lookup_{int(time.time())}.json"
             full_path = output_path(filename)
@@ -1220,9 +1365,7 @@ class DarkelfCLI:
             return
 
         model_choice = Prompt.ask(
-            "Model",
-            choices=["auto", "mistral", "mixtral"],
-            default="auto"
+            "Model", choices=["auto", "mistral", "mixtral"], default="auto"
         )
 
         model = self._scribe_select_model(model_choice)
@@ -1236,13 +1379,10 @@ class DarkelfCLI:
                 "ips": sorted(self.indicators.ips),
                 "hashes": sorted(self.indicators.hashes),
                 "phones": sorted(self.indicators.phones),
-            }
+            },
         )
 
-        use_queue = Confirm.ask(
-            "Run AI in background (non-blocking)?",
-            default=False
-        )
+        use_queue = Confirm.ask("Run AI in background (non-blocking)?", default=False)
 
         def on_result(output: str):
             # Store the result for later export
@@ -1273,12 +1413,10 @@ class DarkelfCLI:
 
         if Confirm.ask("Export this draft?", default=False):
             self._scribe_export(output)
-            
+
     def _scribe_export(self, text: str):
         export_format = Prompt.ask(
-            "Export format",
-            choices=["json", "md"],
-            default="json"
+            "Export format", choices=["json", "md"], default="json"
         )
 
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
@@ -1293,7 +1431,7 @@ class DarkelfCLI:
                 "summary": self._extract_section(text, "Summary"),
                 "evidence": self._extract_list(text, "Evidence"),
                 "sources": self._extract_list(text, "Sources"),
-                "raw_output": text
+                "raw_output": text,
             }
 
             with open(full_path, "w", encoding="utf-8") as f:
@@ -1311,40 +1449,72 @@ class DarkelfCLI:
             self._launch_pwa_viewer(str(full_path))
 
         console.print(f"[green]Saved to {full_path}[/green]")
-        
+
     def _extract_section(self, text: str, header: str) -> str:
         match = re.search(rf"{header}:\n(.*?)(\n[A-Z][a-z]+:|\Z)", text, re.S)
         return match.group(1).strip() if match else ""
 
     def _extract_list(self, text: str, header: str) -> list:
         section = self._extract_section(text, header)
-        return [line.strip("- ").strip() for line in section.splitlines() if line.strip()]
+        return [
+            line.strip("- ").strip() for line in section.splitlines() if line.strip()
+        ]
 
     def _darkelf_ai_run(self, prompt: str, model: str, purpose: str = "scribe") -> str:
         """
         Central Darkelf OSINT AI execution layer.
         All local AI usage should go through here.
         """
+
         _log(f"Darkelf OSINT AI invoked | purpose={purpose} | model={model}")
 
-        proc = subprocess.run(
-            ["ollama", "run", model],
-            input=prompt.encode("utf-8"),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=180
-        )
+        # --- Resolve ollama binary safely (fixes B607) ---
+        ollama_bin = shutil.which("ollama")
+        if not ollama_bin:
+            raise RuntimeError("ollama binary not found in PATH")
 
+        # --- Strict model allowlist (fixes B603) ---
+        ALLOWED_MODELS = {"mistral", "mixtral"}
+        if model not in ALLOWED_MODELS:
+            raise ValueError(f"Invalid model: {model}")
+
+        try:
+            proc = subprocess.run(  # nosec B603
+                [ollama_bin, "run", model],
+                input=prompt.encode("utf-8"),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=180,
+                check=False,
+            )
+
+        except subprocess.TimeoutExpired as e:
+            _log(f"Ollama timeout: {e}", "ERROR")
+            raise RuntimeError("Ollama execution timed out")
+
+        except Exception as e:
+            _log(f"Ollama execution failed: {e}", "ERROR")
+            raise RuntimeError(f"Ollama execution error: {e}")
+
+        # --- Handle non-zero exit ---
         if proc.returncode != 0:
-            raise RuntimeError(proc.stderr.decode("utf-8"))
+            err = proc.stderr.decode("utf-8", errors="ignore").strip()
+            _log(f"Ollama returned error: {err}", "ERROR")
+            raise RuntimeError(err or "Ollama returned non-zero exit code")
 
-        return proc.stdout.decode("utf-8").strip()
-        
+        # --- Decode output safely ---
+        output = proc.stdout.decode("utf-8", errors="ignore").strip()
+
+        if not output:
+            raise RuntimeError("Ollama returned empty output")
+
+        return output
+
     def _scribe_run_ollama(self, prompt: str, model: str) -> str:
         """
         Darkelf Scribe wrapper around Darkelf OSINT AI.
         """
-        result = self._darkelf_ai_run(prompt=prompt,model=model,purpose="scribe")
+        result = self._darkelf_ai_run(prompt=prompt, model=model, purpose="scribe")
 
         if result is None:
             raise RuntimeError("Ollama returned no output")
@@ -1357,18 +1527,18 @@ class DarkelfCLI:
 
         if psutil:
             try:
-                ram_gb = psutil.virtual_memory().total / (1024 ** 3)
+                ram_gb = psutil.virtual_memory().total / (1024**3)
                 return "mixtral" if ram_gb >= 24 else "mistral"
-            except Exception:
-                pass
+            except Exception as e:
+                _log(f"RAM detection failed: {e}", "WARN")
 
         return "mistral"
-        
+
     def _scribe_redact_preview(self, text: str) -> str:
         text = EMAIL_RE.sub("[REDACTED_EMAIL]", text)
         text = IPV4_RE.sub("[REDACTED_IP]", text)
         return text
-        
+
     def _scribe_prompt(self, redacted_notes: str, indicators: dict) -> str:
         return f"""
     You are an OSINT reporting assistant drafting a TraceLabs or CTF submission.
@@ -1396,7 +1566,7 @@ class DarkelfCLI:
     Extracted Indicators:
     {json.dumps(indicators, indent=2)}
     """
-    
+
     def _parse_scribe_output(self, text: str) -> Dict[str, Any]:
         def section(name, next_name=None):
             pattern = rf"{name}:\s*(.*)"
@@ -1426,12 +1596,12 @@ class DarkelfCLI:
             "evidence": evidence,
             "sources": sources,
         }
-        
+
     def _validate_schema(self, data: dict, schema: dict) -> None:
         for key in schema.get("required", []):
             if key not in data:
                 raise ValueError(f"Missing required field: {key}")
-                
+
     def _scribe_to_markdown(self, report: dict) -> str:
         md = []
         md.append("# OSINT Draft Report\n")
@@ -1453,7 +1623,7 @@ class DarkelfCLI:
             md.append(report["investigator_notes"] + "\n")
 
         return "\n".join(md)
-        
+
     def _ai_worker(self):
         while True:
             with self.ai_lock:
@@ -1468,7 +1638,7 @@ class DarkelfCLI:
                 callback(result)
             except Exception as e:
                 callback(f"[ERROR] {e}")
-        
+
     def _enqueue_ai_task(self, prompt: str, model: str, callback):
         with self.ai_lock:
             self.ai_queue.append((prompt, model, callback))
@@ -1478,12 +1648,8 @@ class DarkelfCLI:
 
             self.ai_worker_running = True
 
-        threading.Thread(
-            target=self._ai_worker,
-            daemon=True
-        ).start()
+        threading.Thread(target=self._ai_worker, daemon=True).start()
 
-            
     def _launch_pwa_viewer(self, filename=None):
         import http.server
         import socketserver
@@ -1533,7 +1699,7 @@ class DarkelfCLI:
         console.print(
             "[green]Darkelf PWA Viewer launched (offline, local-only).[/green]"
         )
-        
+
     def cmd_help(self):
         console.print(
             "[bold green]Darkelf CLI Help[/bold green]\n\n"
@@ -1546,7 +1712,7 @@ class DarkelfCLI:
             "[cyan]viewer[/cyan]     — Open Darkelf Scribe Viewer\n"
             "[cyan]quit[/cyan]       — Exit Darkelf\n"
         )
-        
+
     def run(self):
         while self.running:
             choice = self.main_menu()
@@ -1572,12 +1738,17 @@ class DarkelfCLI:
             # small pause for UX
             time.sleep(0.15)
 
+
 # ---------------------------
 # CLI Entrypoint
 # ---------------------------
 def parse_args():
-    p = argparse.ArgumentParser(description="Darkelf CLI TL OSINT Tool Kit — Refactored Edition (Stealth/Tor enforced)")
-    p.add_argument("--no-banner", action="store_true", help="Don't show banner on startup")
+    p = argparse.ArgumentParser(
+        description="Darkelf CLI TL OSINT Tool Kit — Refactored Edition (Stealth/Tor enforced)"
+    )
+    p.add_argument(
+        "--no-banner", action="store_true", help="Don't show banner on startup"
+    )
     p.add_argument("--quiet", action="store_true", help="Minimal console output")
     return p.parse_args()
 
